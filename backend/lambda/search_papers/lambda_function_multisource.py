@@ -315,6 +315,7 @@ def deduplicate_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         
         unique_papers.append(paper)
     
+    return unique_papers
 
 
 def generate_search_summary(query: str, papers: List[Dict[str, Any]], sources: List[str]) -> Dict[str, Any]:
