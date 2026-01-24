@@ -161,10 +161,25 @@ def search_openalex(query: str, field: str, limit: int) -> List[Dict[str, Any]]:
         if open_access.get('is_oa') and open_access.get('oa_url'):
             pdf_url = open_access['oa_url']
         
+        # OpenAlex returns abstract as inverted index - convert it to readable text
+        abstract_text = None
+        abstract_inverted = work.get('abstract_inverted_index')
+        if abstract_inverted and isinstance(abstract_inverted, dict):
+            try:
+                # Reconstruct abstract from inverted index
+                word_positions = []
+                for word, positions in abstract_inverted.items():
+                    for pos in positions:
+                        word_positions.append((pos, word))
+                word_positions.sort(key=lambda x: x[0])
+                abstract_text = ' '.join([word for _, word in word_positions])
+            except Exception:
+                abstract_text = None
+        
         formatted_papers.append({
             'paperId': work.get('id', '').split('/')[-1],  # Extract ID from URL
             'title': work.get('title'),
-            'abstract': work.get('abstract_inverted_index', None),  # OpenAlex uses inverted index
+            'abstract': abstract_text,
             'authors': authors,
             'year': work.get('publication_year'),
             'citationCount': work.get('cited_by_count', 0),
@@ -352,7 +367,9 @@ def generate_search_summary(query: str, papers: List[Dict[str, Any]], sources: L
     
     # Try OpenAI for smarter summary
     api_key = os.environ.get('OPENAI_API_KEY')
+    print(f"OpenAI API key present: {bool(api_key)}")
     if not api_key:
+        print("No OPENAI_API_KEY - returning basic summary")
         return basic_summary
     
     try:
