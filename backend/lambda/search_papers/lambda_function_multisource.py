@@ -411,7 +411,6 @@ Be insightful and specific to the actual papers found."""
     except Exception as e:
         print(f"Error generating AI search summary: {str(e)}")
         return basic_summary
-    return unique_papers
 
 
 def check_cache(query: str, field: str) -> List[Dict[str, Any]] or None:
