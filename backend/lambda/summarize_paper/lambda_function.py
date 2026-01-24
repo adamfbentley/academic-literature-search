@@ -74,21 +74,21 @@ def generate_summary(title: str, abstract: str) -> Dict[str, Any]:
         "Content-Type": "application/json"
     }
     
-    prompt = f"""You are an expert academic researcher. Analyze this paper and extract key insights.
+    prompt = f"""You are an expert academic researcher analyzing a research paper. Extract specific, insightful information from the title and abstract.
 
 Title: {title}
 
 Abstract: {abstract}
 
-Provide ONLY a valid JSON object (no markdown, no code blocks) with exactly these fields:
+Provide ONLY a valid JSON object with exactly these fields:
 {{
-  "key_findings": ["finding 1 in 1-2 sentences", "finding 2 in 1-2 sentences", "finding 3 in 1-2 sentences"],
-  "methodology": "research methodology in 1-2 sentences",
-  "significance": "why this matters to the field in 1-2 sentences",
-  "limitations": "study limitations or 'Not specified'"
+  "key_findings": ["Specific finding 1 from the abstract", "Specific finding 2 from the abstract", "Specific finding 3 from the abstract"],
+  "methodology": "Specific research methods used (be detailed if mentioned)",
+  "significance": "Why this research matters and its contributions",
+  "limitations": "Study limitations or gaps identified, or 'Not specified in abstract'"
 }}
 
-Be specific, insightful, and use clear academic language."""
+Focus on concrete details from the abstract. If information is not available, say so specifically rather than using generic phrases."""
 
     payload = {
         "model": "gpt-3.5-turbo",
