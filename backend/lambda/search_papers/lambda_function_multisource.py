@@ -55,7 +55,8 @@ def lambda_handler(event, context):
                 'papers': cached_result,
                 'count': len(cached_result),
                 'cached': True,
-                'sources': ['cache']
+                'sources': ['cache'],
+                'summary': None  # Cached results don't include summary
             })
         
         # Search multiple sources in parallel
@@ -100,6 +101,9 @@ def lambda_handler(event, context):
         # Limit to requested number
         result_papers = unique_papers[:limit]
         
+        # Generate overall summary of the search results
+        overall_summary = generate_search_summary(query, result_papers, sources_used)
+        
         # Cache results
         cache_results(query, field, result_papers)
         
@@ -107,7 +111,8 @@ def lambda_handler(event, context):
             'papers': result_papers,
             'count': len(result_papers),
             'cached': False,
-            'sources': sources_used
+            'sources': sources_used,
+            'summary': overall_summary
         })
         
     except Exception as e:
@@ -310,6 +315,102 @@ def deduplicate_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         
         unique_papers.append(paper)
     
+
+
+def generate_search_summary(query: str, papers: List[Dict[str, Any]], sources: List[str]) -> Dict[str, Any]:
+    """
+    Generate AI-powered summary of search results using OpenAI
+    """
+    if not papers:
+        return {
+            "overview": f"No papers found for '{query}'.",
+            "key_themes": [],
+            "top_cited": None,
+            "date_range": None
+        }
+    
+    # Extract metadata
+    total_citations = sum(p.get('citationCount', 0) for p in papers)
+    years = [p.get('year') for p in papers if p.get('year')]
+    venues = [p.get('venue') for p in papers if p.get('venue')]
+    
+    # Top cited paper
+    top_paper = max(papers, key=lambda p: p.get('citationCount', 0))
+    
+    # Basic summary (fallback)
+    basic_summary = {
+        "overview": f"Found {len(papers)} papers on '{query}' from {', '.join(sources)}. Total {total_citations:,} citations across results.",
+        "key_themes": list(set(venues[:5])) if venues else [],
+        "top_cited": {
+            "title": top_paper.get('title'),
+            "citations": top_paper.get('citationCount', 0),
+            "year": top_paper.get('year')
+        },
+        "date_range": f"{min(years)}-{max(years)}" if years and len(years) > 1 else str(years[0]) if years else "Unknown"
+    }
+    
+    # Try OpenAI for smarter summary
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        return basic_summary
+    
+    try:
+        # Build context from top 5 papers
+        papers_context = []
+        for i, paper in enumerate(papers[:5], 1):
+            papers_context.append(f"{i}. {paper.get('title')} ({paper.get('year')}, {paper.get('citationCount', 0)} citations)")
+        
+        prompt = f"""Analyze these search results for the query: "{query}"
+
+Top papers found:
+{chr(10).join(papers_context)}
+
+Total papers: {len(papers)}
+Sources: {', '.join(sources)}
+
+Provide ONLY a valid JSON object with:
+{{
+  "overview": "2-3 sentence overview of what these papers collectively reveal about {query}",
+  "key_themes": ["theme 1", "theme 2", "theme 3"],
+  "research_trends": "1-2 sentences about research direction or trends visible in these results"
+}}
+
+Be insightful and specific to the actual papers found."""
+
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "gpt-3.5-turbo",
+            "messages": [
+                {"role": "system", "content": "You are an expert research analyst. Respond with valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.5,
+            "max_tokens": 400,
+            "response_format": { "type": "json_object" }
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        response.raise_for_status()
+        
+        result = response.json()
+        ai_summary = json.loads(result['choices'][0]['message']['content'])
+        
+        # Merge AI summary with basic stats
+        return {
+            **ai_summary,
+            "top_cited": basic_summary["top_cited"],
+            "date_range": basic_summary["date_range"],
+            "total_citations": total_citations
+        }
+        
+    except Exception as e:
+        print(f"Error generating AI search summary: {str(e)}")
+        return basic_summary
     return unique_papers
 
 
