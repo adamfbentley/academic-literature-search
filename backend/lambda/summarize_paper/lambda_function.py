@@ -62,8 +62,10 @@ def generate_summary(title: str, abstract: str) -> Dict[str, Any]:
     api_key = os.environ.get('OPENAI_API_KEY')
     
     if not api_key:
-        # Fallback: Return structured extraction from abstract
+        print("No OpenAI API key found - using fallback extraction")
         return extract_simple_summary(title, abstract)
+    
+    print(f"Using OpenAI API key (starts with: {api_key[:10]}...)")
     
     # OpenAI API call
     url = "https://api.openai.com/v1/chat/completions"
@@ -72,51 +74,71 @@ def generate_summary(title: str, abstract: str) -> Dict[str, Any]:
         "Content-Type": "application/json"
     }
     
-    prompt = f"""Analyze this academic paper and provide a structured summary:
+    prompt = f"""You are an expert academic researcher. Analyze this paper and extract key insights.
 
 Title: {title}
 
 Abstract: {abstract}
 
-Provide a JSON response with these fields:
-- key_findings: List of 2-3 main findings (array of strings)
-- methodology: Brief description of research method (string)
-- significance: Why this research matters (string)
-- limitations: Potential limitations if mentioned (string or "Not specified")
+Provide ONLY a valid JSON object (no markdown, no code blocks) with exactly these fields:
+{{
+  "key_findings": ["finding 1 in 1-2 sentences", "finding 2 in 1-2 sentences", "finding 3 in 1-2 sentences"],
+  "methodology": "research methodology in 1-2 sentences",
+  "significance": "why this matters to the field in 1-2 sentences",
+  "limitations": "study limitations or 'Not specified'"
+}}
 
-Keep each point concise (1-2 sentences max)."""
+Be specific, insightful, and use clear academic language."""
 
     payload = {
         "model": "gpt-3.5-turbo",
         "messages": [
-            {"role": "system", "content": "You are an expert academic researcher who summarizes papers clearly and concisely."},
+            {"role": "system", "content": "You are an expert academic researcher. Always respond with valid JSON only, no markdown formatting."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.3,
-        "max_tokens": 500
+        "temperature": 0.4,
+        "max_tokens": 600,
+        "response_format": { "type": "json_object" }
     }
     
     try:
+        print("Calling OpenAI API...")
         response = requests.post(url, headers=headers, json=payload, timeout=30)
+        print(f"OpenAI response status: {response.status_code}")
         response.raise_for_status()
         
         result = response.json()
         summary_text = result['choices'][0]['message']['content']
+        print(f"OpenAI raw response: {summary_text[:200]}...")
         
-        # Try to parse as JSON, fallback to text
+        # Parse JSON response
         try:
+            # Remove markdown code blocks if present
+            if summary_text.strip().startswith('```'):
+                summary_text = summary_text.strip()
+                summary_text = summary_text.split('```')[1]
+                if summary_text.startswith('json'):
+                    summary_text = summary_text[4:]
+            
             summary_json = json.loads(summary_text)
+            print("Successfully parsed AI summary")
             return summary_json
-        except:
+        except json.JSONDecodeError as je:
+            print(f"JSON parse error: {str(je)}, raw text: {summary_text}")
             return {
-                "key_findings": [summary_text],
+                "key_findings": [summary_text[:500]],
                 "methodology": "See abstract",
                 "significance": "Academic research contribution",
                 "limitations": "Not specified"
             }
             
+    except requests.exceptions.RequestException as req_err:
+        print(f"OpenAI API request error: {str(req_err)}")
+        if hasattr(req_err, 'response') and req_err.response is not None:
+            print(f"Response content: {req_err.response.text}")
+        return extract_simple_summary(title, abstract)
     except Exception as e:
-        print(f"OpenAI API error: {str(e)}")
+        print(f"OpenAI API unexpected error: {type(e).__name__}: {str(e)}")
         return extract_simple_summary(title, abstract)
 
 
