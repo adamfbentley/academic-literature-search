@@ -26,20 +26,23 @@ def lambda_handler(event, context):
         paper_id = body.get('paperId', '').strip()
         title = body.get('title', '').strip()
         abstract = body.get('abstract', '').strip()
+        force_refresh = bool(body.get('forceRefresh', False))
+        debug = bool(body.get('debug', False))
         
         if not title or not abstract:
             return create_response(400, {'error': 'Title and abstract are required'})
         
         # Check cache first
         cached_summary = check_cache(paper_id)
-        if cached_summary:
+        if cached_summary and not force_refresh:
             return create_response(200, {
                 'summary': cached_summary,
-                'cached': True
+                'cached': True,
+                **({'meta': {'fromCache': True}} if debug else {})
             })
         
         # Generate AI summary
-        summary = generate_summary(title, abstract)
+        summary, meta = generate_summary(title, abstract)
         
         # Cache the summary
         if paper_id:
@@ -47,7 +50,8 @@ def lambda_handler(event, context):
         
         return create_response(200, {
             'summary': summary,
-            'cached': False
+            'cached': False,
+            **({'meta': meta} if debug else {})
         })
         
     except Exception as e:
@@ -55,15 +59,19 @@ def lambda_handler(event, context):
         return create_response(500, {'error': f'Internal server error: {str(e)}'})
 
 
-def generate_summary(title: str, abstract: str) -> Dict[str, Any]:
+def generate_summary(title: str, abstract: str):
     """
     Generate AI summary using OpenAI API
     """
     api_key = os.environ.get('OPENAI_API_KEY')
+    meta: Dict[str, Any] = {
+        'hasOpenAIKey': bool(api_key),
+        'usedAI': False,
+    }
     
     if not api_key:
         print("No OpenAI API key found - using fallback extraction")
-        return extract_simple_summary(title, abstract)
+        return extract_simple_summary(title, abstract), meta
     
     print(f"Using OpenAI API key (starts with: {api_key[:10]}...)")
     
@@ -105,6 +113,7 @@ Focus on concrete details from the abstract. If information is not available, sa
         print("Calling OpenAI API...")
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         print(f"OpenAI response status: {response.status_code}")
+        meta['openaiStatus'] = response.status_code
         response.raise_for_status()
         
         result = response.json()
@@ -122,24 +131,28 @@ Focus on concrete details from the abstract. If information is not available, sa
             
             summary_json = json.loads(summary_text)
             print("Successfully parsed AI summary")
-            return summary_json
+            meta['usedAI'] = True
+            return summary_json, meta
         except json.JSONDecodeError as je:
             print(f"JSON parse error: {str(je)}, raw text: {summary_text}")
+            meta['usedAI'] = True
             return {
                 "key_findings": [summary_text[:500]],
                 "methodology": "See abstract",
                 "significance": "Academic research contribution",
                 "limitations": "Not specified"
-            }
+            }, meta
             
     except requests.exceptions.RequestException as req_err:
         print(f"OpenAI API request error: {str(req_err)}")
         if hasattr(req_err, 'response') and req_err.response is not None:
             print(f"Response content: {req_err.response.text}")
-        return extract_simple_summary(title, abstract)
+        meta['openaiError'] = str(req_err)
+        return extract_simple_summary(title, abstract), meta
     except Exception as e:
         print(f"OpenAI API unexpected error: {type(e).__name__}: {str(e)}")
-        return extract_simple_summary(title, abstract)
+        meta['openaiError'] = f"{type(e).__name__}: {str(e)}"
+        return extract_simple_summary(title, abstract), meta
 
 
 def extract_simple_summary(title: str, abstract: str) -> Dict[str, Any]:

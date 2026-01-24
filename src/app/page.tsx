@@ -17,7 +17,14 @@ export default function Home() {
     summary?: any;
   } | null>(null);
 
-  const handleSearch = async (query: string, limit: number) => {
+  const handleSearch = async (params: {
+    query: string;
+    limit: number;
+    fromYear?: number;
+    toYear?: number;
+    minCitations?: number;
+  }) => {
+    const { query, limit, fromYear, toYear, minCitations } = params;
     if (!query.trim()) {
       setError('Please enter a search query');
       return;
@@ -35,7 +42,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query, limit }),
+        body: JSON.stringify({ query, limit, fromYear, toYear, minCitations }),
       });
 
       if (!response.ok) {
@@ -96,12 +103,17 @@ export default function Home() {
               </div>
             </div>
 
-            {/* AI-Generated Research Overview */}
-            {searchInfo.summary && !searchInfo.cached && (
+            {/* Research Overview (AI or fallback) */}
+            {searchInfo.summary && (
               <div className="p-5 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 rounded-lg border border-purple-200 dark:border-purple-800">
                 <h3 className="text-lg font-semibold text-purple-900 dark:text-purple-100 mb-3 flex items-center gap-2">
                   🔬 Research Landscape Overview
                 </h3>
+                {searchInfo.cached && (
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                    Showing summary for cached papers (search is fast; summary may still be generated).
+                  </p>
+                )}
                 
                 {/* Overview */}
                 <div className="mb-4">

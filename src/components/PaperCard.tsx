@@ -19,8 +19,9 @@ export default function PaperCard({ paper }: PaperCardProps) {
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [summaryCached, setSummaryCached] = useState<boolean | null>(null);
 
-  const handleSummarize = async () => {
+  const handleSummarize = async (forceRefresh = false) => {
     if (summary) {
       setShowSummary(!showSummary);
       return;
@@ -45,6 +46,8 @@ export default function PaperCard({ paper }: PaperCardProps) {
           paperId: paper.paperId,
           title: paper.title,
           abstract: paper.abstract,
+          forceRefresh,
+          debug: true,
         }),
       });
 
@@ -54,6 +57,7 @@ export default function PaperCard({ paper }: PaperCardProps) {
 
       const data = await response.json();
       setSummary(data.summary);
+      setSummaryCached(Boolean(data.cached));
       setShowSummary(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate summary');
@@ -134,13 +138,28 @@ export default function PaperCard({ paper }: PaperCardProps) {
         
         {/* AI Summarize Button */}
         {paper.abstract && (
-          <button
-            onClick={handleSummarize}
-            disabled={loadingSummary}
-            className="text-sm px-3 py-1 rounded-md bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {loadingSummary ? '✨ Summarizing...' : summary ? (showSummary ? '▼ Hide AI Summary' : '▶ Show AI Summary') : '✨ AI Summary'}
-          </button>
+          <>
+            <button
+              onClick={() => handleSummarize(false)}
+              disabled={loadingSummary}
+              className="text-sm px-3 py-1 rounded-md bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {loadingSummary ? '✨ Summarizing...' : summary ? (showSummary ? '▼ Hide AI Summary' : '▶ Show AI Summary') : '✨ AI Summary'}
+            </button>
+            <button
+              onClick={() => {
+                setSummary(null);
+                setShowSummary(false);
+                setSummaryCached(null);
+                handleSummarize(true);
+              }}
+              disabled={loadingSummary}
+              className="text-sm px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Forces regeneration (bypasses DynamoDB cache)"
+            >
+              ↻ Regenerate
+            </button>
+          </>
         )}
       </div>
 
@@ -157,6 +176,11 @@ export default function PaperCard({ paper }: PaperCardProps) {
           <h4 className="font-semibold text-purple-900 dark:text-purple-100 mb-3 flex items-center gap-2">
             ✨ AI-Generated Summary
           </h4>
+          {summaryCached !== null && (
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+              {summaryCached ? 'Returned from cache (may be an older fallback).' : 'Freshly generated.'}
+            </p>
+          )}
           
           {/* Key Findings */}
           <div className="mb-3">

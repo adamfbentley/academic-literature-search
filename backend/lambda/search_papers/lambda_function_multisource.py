@@ -42,30 +42,42 @@ def lambda_handler(event, context):
         query = body.get('query', '').strip()
         field = body.get('field', '')
         limit = min(body.get('limit', 20), 50)  # Cap at 50
+        from_year = body.get('fromYear', None)
+        to_year = body.get('toYear', None)
+        min_citations = body.get('minCitations', None)
+        force_refresh = bool(body.get('forceRefresh', False))
+        debug = bool(body.get('debug', False))
         
         if not query:
             return create_response(400, {'error': 'Query parameter is required'})
         
         # Check cache first
-        cached_result = check_cache(query, field)
+        cached_result = None if force_refresh else check_cache(query, field)
         if cached_result:
             # Convert any Decimal objects from DynamoDB
             cached_result = decimal_to_number(cached_result)
+
+            # Apply filters to cached papers if requested
+            filtered_cached = apply_filters(cached_result, from_year, to_year, min_citations)
+
+            # Generate a summary even for cached results (so UI can show it)
+            overall_summary = generate_search_summary(query, filtered_cached[:limit], ['cache'])
             return create_response(200, {
-                'papers': cached_result,
-                'count': len(cached_result),
+                'papers': filtered_cached[:limit],
+                'count': len(filtered_cached[:limit]),
                 'cached': True,
                 'sources': ['cache'],
-                'summary': None  # Cached results don't include summary
+                'summary': overall_summary,
+                **({'debug': {'forceRefresh': force_refresh}} if debug else {})
             })
         
-        # Search multiple sources in parallel
+        # Search multiple sources
         all_papers = []
         sources_used = []
         
         # 1. OpenAlex (primary - best rate limits)
         try:
-            openalex_papers = search_openalex(query, field, limit)
+            openalex_papers = search_openalex(query, field, limit, from_year, to_year, min_citations)
             all_papers.extend(openalex_papers)
             sources_used.append('OpenAlex')
             print(f"OpenAlex returned {len(openalex_papers)} papers")
@@ -94,6 +106,9 @@ def lambda_handler(event, context):
         
         # Remove duplicates (by DOI or title)
         unique_papers = deduplicate_papers(all_papers)
+
+        # Apply filters (for sources that don't support them well)
+        unique_papers = apply_filters(unique_papers, from_year, to_year, min_citations)
         
         # Sort by citation count (if available) and year
         unique_papers.sort(key=lambda p: (p.get('citationCount', 0), p.get('year', 0)), reverse=True)
@@ -112,7 +127,8 @@ def lambda_handler(event, context):
             'count': len(result_papers),
             'cached': False,
             'sources': sources_used,
-            'summary': overall_summary
+            'summary': overall_summary,
+            **({'debug': {'forceRefresh': force_refresh}} if debug else {})
         })
         
     except Exception as e:
@@ -120,7 +136,7 @@ def lambda_handler(event, context):
         return create_response(500, {'error': f'Internal server error: {str(e)}'})
 
 
-def search_openalex(query: str, field: str, limit: int) -> List[Dict[str, Any]]:
+def search_openalex(query: str, field: str, limit: int, from_year=None, to_year=None, min_citations=None) -> List[Dict[str, Any]]:
     """
     Search papers using OpenAlex API (best free option)
     https://docs.openalex.org/
@@ -138,6 +154,20 @@ def search_openalex(query: str, field: str, limit: int) -> List[Dict[str, Any]]:
         'sort': 'cited_by_count:desc',
         'mailto': 'your-email@example.com'  # Polite API usage
     }
+
+    # Optional filters for more specific searches
+    filters = []
+    try:
+        if from_year:
+            filters.append(f"from_publication_date:{int(from_year)}-01-01")
+        if to_year:
+            filters.append(f"to_publication_date:{int(to_year)}-12-31")
+        if min_citations is not None and str(min_citations).strip() != '':
+            filters.append(f"cited_by_count:>{int(min_citations)}")
+    except Exception:
+        filters = []
+    if filters:
+        params['filter'] = ','.join(filters)
     
     response = requests.get(base_url, params=params, timeout=30)
     response.raise_for_status()
@@ -331,6 +361,51 @@ def deduplicate_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         unique_papers.append(paper)
     
     return unique_papers
+
+
+def apply_filters(papers: List[Dict[str, Any]], from_year=None, to_year=None, min_citations=None) -> List[Dict[str, Any]]:
+    """Apply year/citation filters in a source-agnostic way."""
+    if not papers:
+        return []
+
+    try:
+        from_year_i = int(from_year) if from_year is not None and str(from_year).strip() != '' else None
+    except Exception:
+        from_year_i = None
+    try:
+        to_year_i = int(to_year) if to_year is not None and str(to_year).strip() != '' else None
+    except Exception:
+        to_year_i = None
+    try:
+        min_citations_i = int(min_citations) if min_citations is not None and str(min_citations).strip() != '' else None
+    except Exception:
+        min_citations_i = None
+
+    filtered = []
+    for p in papers:
+        year = p.get('year')
+        if year is not None:
+            try:
+                year = int(year)
+            except Exception:
+                year = None
+
+        if from_year_i is not None and year is not None and year < from_year_i:
+            continue
+        if to_year_i is not None and year is not None and year > to_year_i:
+            continue
+
+        if min_citations_i is not None:
+            try:
+                c = int(p.get('citationCount', 0) or 0)
+            except Exception:
+                c = 0
+            if c < min_citations_i:
+                continue
+
+        filtered.append(p)
+
+    return filtered
 
 
 def generate_search_summary(query: str, papers: List[Dict[str, Any]], sources: List[str]) -> Dict[str, Any]:

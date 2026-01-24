@@ -3,17 +3,33 @@
 import { useState } from 'react';
 
 interface SearchBarProps {
-  onSearch: (query: string, limit: number) => void;
+  onSearch: (params: {
+    query: string;
+    limit: number;
+    fromYear?: number;
+    toYear?: number;
+    minCitations?: number;
+  }) => void;
   loading: boolean;
 }
 
 export default function SearchBar({ onSearch, loading }: SearchBarProps) {
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(10);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [fromYear, setFromYear] = useState<string>('');
+  const [toYear, setToYear] = useState<string>('');
+  const [minCitations, setMinCitations] = useState<string>('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSearch(query, limit);
+    onSearch({
+      query,
+      limit,
+      fromYear: fromYear.trim() ? Number(fromYear) : undefined,
+      toYear: toYear.trim() ? Number(toYear) : undefined,
+      minCitations: minCitations.trim() ? Number(minCitations) : undefined,
+    });
   };
 
   return (
@@ -37,7 +53,70 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
               className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               disabled={loading}
             />
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              Tips: use quotes for exact phrases (e.g. "quantum error correction"), add more keywords to narrow results.
+            </p>
           </div>
+
+          {/* Advanced Toggle */}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+            disabled={loading}
+          >
+            {showAdvanced ? '▼ Hide advanced filters' : '▶ Show advanced filters'}
+          </button>
+
+          {/* Advanced Filters */}
+          {showAdvanced && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  From year
+                </label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={fromYear}
+                  onChange={(e) => setFromYear(e.target.value)}
+                  placeholder="e.g. 2020"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  disabled={loading}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  To year
+                </label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={toYear}
+                  onChange={(e) => setToYear(e.target.value)}
+                  placeholder="e.g. 2025"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  disabled={loading}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Min citations
+                </label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={minCitations}
+                  onChange={(e) => setMinCitations(e.target.value)}
+                  placeholder="e.g. 50"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  disabled={loading}
+                />
+              </div>
+            </div>
+          )}
 
           {/* Limit Selector */}
           <div className="flex items-center gap-4">
