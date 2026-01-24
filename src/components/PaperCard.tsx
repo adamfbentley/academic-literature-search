@@ -1,12 +1,67 @@
 'use client';
 
+import { useState } from 'react';
 import { Paper } from '@/types/paper';
 
 interface PaperCardProps {
   paper: Paper;
 }
 
+interface Summary {
+  key_findings: string[];
+  methodology: string;
+  significance: string;
+  limitations: string;
+}
+
 export default function PaperCard({ paper }: PaperCardProps) {
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSummarize = async () => {
+    if (summary) {
+      setShowSummary(!showSummary);
+      return;
+    }
+
+    if (!paper.abstract) {
+      setError('No abstract available to summarize');
+      return;
+    }
+
+    setLoadingSummary(true);
+    setError(null);
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
+      const response = await fetch(`${apiUrl}/summarize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          paperId: paper.paperId,
+          title: paper.title,
+          abstract: paper.abstract,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setSummary(data.summary);
+      setShowSummary(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate summary');
+      console.error('Summarization error:', err);
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
   return (
     <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 p-6 border border-slate-200 dark:border-slate-700">
       {/* Title */}
@@ -55,7 +110,7 @@ export default function PaperCard({ paper }: PaperCardProps) {
       )}
 
       {/* Action Buttons */}
-      <div className="flex gap-3">
+      <div className="flex gap-3 items-center flex-wrap">
         {paper.url && (
           <a
             href={paper.url}
@@ -76,7 +131,64 @@ export default function PaperCard({ paper }: PaperCardProps) {
             Download PDF ↓
           </a>
         )}
+        
+        {/* AI Summarize Button */}
+        {paper.abstract && (
+          <button
+            onClick={handleSummarize}
+            disabled={loadingSummary}
+            className="text-sm px-3 py-1 rounded-md bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {loadingSummary ? '✨ Summarizing...' : summary ? (showSummary ? '▼ Hide AI Summary' : '▶ Show AI Summary') : '✨ AI Summary'}
+          </button>
+        )}
       </div>
+
+      {/* Error Message */}
+      {error && (
+        <div className="mt-3 p-2 bg-red-50 dark:bg-red-900/20 rounded text-sm text-red-600 dark:text-red-400">
+          {error}
+        </div>
+      )}
+
+      {/* AI Summary Section */}
+      {showSummary && summary && (
+        <div className="mt-4 p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-800">
+          <h4 className="font-semibold text-purple-900 dark:text-purple-100 mb-3 flex items-center gap-2">
+            ✨ AI-Generated Summary
+          </h4>
+          
+          {/* Key Findings */}
+          <div className="mb-3">
+            <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">🔍 Key Findings:</h5>
+            <ul className="list-disc list-inside space-y-1">
+              {summary.key_findings.map((finding, idx) => (
+                <li key={idx} className="text-sm text-slate-600 dark:text-slate-400">{finding}</li>
+              ))}
+            </ul>
+          </div>
+
+          {/* Methodology */}
+          <div className="mb-3">
+            <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">🔬 Methodology:</h5>
+            <p className="text-sm text-slate-600 dark:text-slate-400">{summary.methodology}</p>
+          </div>
+
+          {/* Significance */}
+          <div className="mb-3">
+            <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">💡 Significance:</h5>
+            <p className="text-sm text-slate-600 dark:text-slate-400">{summary.significance}</p>
+          </div>
+
+          {/* Limitations */}
+          {summary.limitations && summary.limitations !== 'Not specified' && (
+            <div>
+              <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">⚠️ Limitations:</h5>
+              <p className="text-sm text-slate-600 dark:text-slate-400">{summary.limitations}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
