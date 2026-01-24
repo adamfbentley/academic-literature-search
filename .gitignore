@@ -17,7 +17,6 @@ lambda_function.zip
 
 # Dependencies
 node_modules/
-package-lock.json
 
 # Environment
 .env
