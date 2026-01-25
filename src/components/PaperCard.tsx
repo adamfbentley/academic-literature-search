@@ -52,7 +52,9 @@ export default function PaperCard({ paper }: PaperCardProps) {
       });
 
       if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.error || `API error: ${response.status}`;
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
