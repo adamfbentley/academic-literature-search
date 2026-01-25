@@ -3,7 +3,7 @@ import os
 import boto3
 import requests
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Initialize AWS services
 dynamodb = boto3.resource('dynamodb')
@@ -44,8 +44,10 @@ def lambda_handler(event, context):
         # Generate AI summary
         summary, meta = generate_summary(title, abstract)
         
-        # Cache the summary
-        if paper_id:
+        # Cache only successful AI-generated summaries.
+        # This prevents quota/network errors from being cached for 30 days and
+        # masking a later fix to billing/credentials.
+        if paper_id and meta.get('usedAI') is True:
             cache_summary(paper_id, summary)
         
         return create_response(200, {
@@ -114,6 +116,16 @@ Focus on concrete details from the abstract. If information is not available, sa
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         print(f"OpenAI response status: {response.status_code}")
         meta['openaiStatus'] = response.status_code
+
+        if response.status_code != 200:
+            try:
+                err = response.json().get('error', {})
+                meta['openaiErrorType'] = err.get('type')
+                meta['openaiErrorCode'] = err.get('code')
+                meta['openaiMessage'] = err.get('message')
+            except Exception:
+                meta['openaiMessage'] = response.text[:2000]
+
         response.raise_for_status()
         
         result = response.json()
@@ -147,6 +159,13 @@ Focus on concrete details from the abstract. If information is not available, sa
         print(f"OpenAI API request error: {str(req_err)}")
         if hasattr(req_err, 'response') and req_err.response is not None:
             print(f"Response content: {req_err.response.text}")
+            try:
+                err = req_err.response.json().get('error', {})
+                meta['openaiErrorType'] = err.get('type')
+                meta['openaiErrorCode'] = err.get('code')
+                meta['openaiMessage'] = err.get('message')
+            except Exception:
+                pass
         meta['openaiError'] = str(req_err)
         return extract_simple_summary(title, abstract), meta
     except Exception as e:
@@ -173,7 +192,7 @@ def extract_simple_summary(title: str, abstract: str) -> Dict[str, Any]:
     }
 
 
-def check_cache(paper_id: str) -> Dict[str, Any] or None:
+def check_cache(paper_id: str) -> Optional[Dict[str, Any]]:
     """Check DynamoDB cache for existing summary"""
     if not paper_id:
         return None
