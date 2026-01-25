@@ -9,6 +9,9 @@ interface SearchBarProps {
     fromYear?: number;
     toYear?: number;
     minCitations?: number;
+    sort?: 'relevance' | 'citations' | 'date';
+    topic?: string;
+    includeArxiv?: boolean;
   }) => void;
   loading: boolean;
 }
@@ -20,6 +23,9 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
   const [fromYear, setFromYear] = useState<string>('');
   const [toYear, setToYear] = useState<string>('');
   const [minCitations, setMinCitations] = useState<string>('');
+  const [sort, setSort] = useState<'relevance' | 'citations' | 'date'>('relevance');
+  const [topic, setTopic] = useState<string>('');
+  const [includeArxiv, setIncludeArxiv] = useState<boolean>(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,6 +35,9 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
       fromYear: fromYear.trim() ? Number(fromYear) : undefined,
       toYear: toYear.trim() ? Number(toYear) : undefined,
       minCitations: minCitations.trim() ? Number(minCitations) : undefined,
+      sort,
+      topic: topic.trim() ? topic.trim() : undefined,
+      includeArxiv,
     });
   };
 
@@ -71,6 +80,39 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
           {/* Advanced Filters */}
           {showAdvanced && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="md:col-span-3">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Topic / Concept (optional)
+                </label>
+                <input
+                  type="text"
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  placeholder="e.g. quantum error correction, surface codes"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  disabled={loading}
+                />
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  This narrows results using OpenAlex Concepts. Leave blank to use keyword search only.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Sort
+                </label>
+                <select
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as any)}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  disabled={loading}
+                >
+                  <option value="relevance">Relevance</option>
+                  <option value="citations">Citations</option>
+                  <option value="date">Newest</option>
+                </select>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
                   From year
@@ -114,6 +156,20 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
                   disabled={loading}
                 />
+              </div>
+
+              <div className="md:col-span-3 flex items-center gap-3 pt-2">
+                <input
+                  id="includeArxiv"
+                  type="checkbox"
+                  checked={includeArxiv}
+                  onChange={(e) => setIncludeArxiv(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                  disabled={loading}
+                />
+                <label htmlFor="includeArxiv" className="text-sm text-slate-700 dark:text-slate-300">
+                  Include arXiv preprints (more physics/CS-heavy)
+                </label>
               </div>
             </div>
           )}
