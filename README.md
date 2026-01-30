@@ -2,7 +2,7 @@
 
 **AI-powered academic search engine aggregating OpenAlex, Semantic Scholar, and arXiv with intelligent summarization.**
 
-🚀 **Live:** [academic-literature-ai.com](https://main.d23u9q77hfnreo.amplifyapp.com/)
+🚀 **Live:** [https://main.d3bx8zuggsa7j9.amplifyapp.com/](https://main.d3bx8zuggsa7j9.amplifyapp.com/)
 
 ## Overview
 
