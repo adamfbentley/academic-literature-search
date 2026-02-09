@@ -40,7 +40,7 @@ This is your complete step-by-step guide to deploy the Academic Literature AI ap
 
 ---
 
-### Step 4: API Gateway 🔄 NEXT - DO THIS NOW
+### Step 4: API Gateway 🔄
 
 Create a public API endpoint so you can call your Lambda from anywhere.
 
