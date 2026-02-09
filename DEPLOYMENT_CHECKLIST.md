@@ -4,7 +4,7 @@ This is your complete step-by-step guide to deploy the Academic Literature AI ap
 
 ---
 
-## ✅ Phase 1: Backend MVP - Paper Search (YOU ARE HERE)
+## ✅ Phase 1: Backend MVP - Paper Search 
 
 ### Step 1: DynamoDB Table ✅ (Assumed Complete)
 - [x] Created `academic-papers-cache` table
@@ -270,22 +270,6 @@ Once that's working, you have a deployed backend API! 🎉
 
 ---
 
-## 📝 Notes for Resume/Portfolio
-
-Once Phase 1 is complete, you can say:
-
-> "Built a serverless academic literature search API using AWS Lambda, API Gateway, and DynamoDB. Integrated Semantic Scholar API to provide real-time paper discovery with intelligent caching. Architecture handles 1000+ requests/day at <$10/month operating cost."
-
-After Phase 2:
-> "Enhanced with AWS Bedrock AI integration for automatic research paper summarization, reducing literature review time by 80%."
-
-After Phase 3:
-> "Deployed full-stack application with Next.js frontend on Vercel, serving researchers worldwide with sub-second response times."
-
----
-
-## Let's Get API Gateway Done! 🚀
-
 Open [AWS_SETUP.md Step 7](backend/AWS_SETUP.md#step-7-create-api-gateway) and follow Parts A through F.
 
-You're almost there!
+
