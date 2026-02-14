@@ -1,11 +1,37 @@
 export default function LoadingSpinner() {
   return (
-    <div className="flex flex-col items-center justify-center">
-      <div className="relative w-16 h-16">
-        <div className="absolute top-0 left-0 w-full h-full border-4 border-slate-200 dark:border-slate-700 rounded-full"></div>
-        <div className="absolute top-0 left-0 w-full h-full border-4 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
+    <div className="flex flex-col items-center justify-center py-8">
+      {/* Animated dots */}
+      <div className="flex items-center gap-2 mb-6">
+        <div className="w-3 h-3 rounded-full bg-primary-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+        <div className="w-3 h-3 rounded-full bg-accent-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+        <div className="w-3 h-3 rounded-full bg-pink-500 animate-bounce" style={{ animationDelay: '300ms' }} />
       </div>
-      <p className="mt-4 text-slate-600 dark:text-slate-400">Searching papers...</p>
+
+      {/* Skeleton cards */}
+      <div className="w-full max-w-4xl space-y-4">
+        {[1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="glass rounded-2xl p-6 shadow-glass shimmer"
+            style={{ opacity: 1 - (i - 1) * 0.25 }}
+          >
+            <div className="h-5 w-3/4 bg-slate-200 dark:bg-slate-700 rounded-lg mb-3" />
+            <div className="h-3 w-1/3 bg-slate-200 dark:bg-slate-700 rounded-lg mb-4" />
+            <div className="flex gap-2 mb-4">
+              <div className="h-6 w-16 bg-slate-200 dark:bg-slate-700 rounded-lg" />
+              <div className="h-6 w-20 bg-slate-200 dark:bg-slate-700 rounded-lg" />
+              <div className="h-6 w-14 bg-slate-200 dark:bg-slate-700 rounded-lg" />
+            </div>
+            <div className="space-y-2">
+              <div className="h-3 w-full bg-slate-200 dark:bg-slate-700 rounded-lg" />
+              <div className="h-3 w-5/6 bg-slate-200 dark:bg-slate-700 rounded-lg" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className="mt-6 text-sm text-slate-400 dark:text-slate-500">Searching across databases…</p>
     </div>
   );
 }
