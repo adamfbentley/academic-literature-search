@@ -22,7 +22,10 @@
 # secrets
 api key.txt
 api_key.txt
+.env
 
+# deployment artifacts
+*.zip
 
 # debug
 npm-debug.log*

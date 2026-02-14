@@ -79,24 +79,24 @@ User → AWS Amplify (static site)
 ## Project Structure
 
 ```
-academic-literature-ai/
 ├── src/                          # Next.js frontend
 │   ├── app/
 │   │   ├── page.tsx              # Main search page
 │   │   ├── layout.tsx            # Root layout
 │   │   └── globals.css           # Global styles
 │   ├── components/
-│   │   ├── SearchBar.tsx         # Search + filters
-│   │   ├── PaperCard.tsx         # Paper display
+│   │   ├── SearchBar.tsx         # Search input + advanced filters
+│   │   ├── PaperCard.tsx         # Paper display + per-paper summarization
 │   │   └── LoadingSpinner.tsx    # Loading state
 │   └── types/
-│       └── paper.ts              # TypeScript types
+│       └── paper.ts              # TypeScript interfaces
 ├── backend/
-│   └── lambda/
-│       ├── search_papers/
-│       │   └── lambda_function_multisource.py  # Multi-source search
-│       └── summarize_paper/
-│           └── lambda_function.py              # AI summarization
+│   ├── lambda/
+│   │   ├── search_papers/
+│   │   │   └── lambda_function_multisource.py  # Multi-source search + AI overview
+│   │   └── summarize_paper/
+│   │       └── lambda_function.py              # Per-paper AI summarization
+│   └── deploy.ps1                # Lambda packaging script
 ├── amplify.yml                   # AWS Amplify build config
 ├── package.json                  # Node.js dependencies
 └── tsconfig.json                 # TypeScript config
@@ -150,15 +150,12 @@ academic-literature-ai/
        --zip-file fileb://function.zip
      ```
 
-3. **Environment variables:**
-   Set in Lambda console:
-   ```
-   DYNAMODB_TABLE=academic-papers-cache
-   OPENAI_API_KEY=sk-...
-   OPENAI_MODEL=gpt-4o-mini
-   SEMANTIC_SCHOLAR_API_KEY=... (optional)
-   OPENALEX_MAILTO=your-email@example.com
-   ```
+3. **Environment variables** (set in Lambda console):
+   - `DYNAMODB_TABLE` — DynamoDB table name (default: `academic-papers-cache`)
+   - `OPENAI_API_KEY` — enables AI summaries and deep overviews (optional; degrades gracefully)
+   - `OPENAI_MODEL` — model name (default: `gpt-4o-mini`)
+   - `OPENALEX_MAILTO` — contact email for polite OpenAlex API usage
+   - `SEMANTIC_SCHOLAR_API_KEY` — optional; raises S2 rate limits
 
 4. **API Gateway:**
    - Create REST API with Lambda proxy integration
