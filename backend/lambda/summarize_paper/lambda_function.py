@@ -23,14 +23,18 @@ def lambda_handler(event, context):
     try:
         # Parse request body
         body = json.loads(event.get('body', '{}'))
-        paper_id = body.get('paperId', '').strip()
-        title = body.get('title', '').strip()
-        abstract = body.get('abstract', '').strip()
+        paper_id = body.get('paperId', '').strip() if body.get('paperId') else ''
+        title = body.get('title', '').strip() if body.get('title') else ''
+        abstract_raw = body.get('abstract')
+        abstract = abstract_raw.strip() if abstract_raw else ''
         force_refresh = bool(body.get('forceRefresh', False))
         debug = bool(body.get('debug', False))
         
-        if not title or not abstract:
-            return create_response(400, {'error': 'Title and abstract are required'})
+        if not title:
+            return create_response(400, {'error': 'Title is required'})
+        
+        if not abstract:
+            return create_response(400, {'error': 'Abstract is required or not available for this paper'})
         
         # Check cache first
         cached_summary = check_cache(paper_id)
