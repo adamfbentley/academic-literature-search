@@ -47,11 +47,12 @@ export default function RagWorkspace({
 }: RagWorkspaceProps) {
   const [namespace, setNamespace] = useState('default');
   const [ingestQuery, setIngestQuery] = useState('');
-  const [ingestLimit, setIngestLimit] = useState(15);
-  const [extractPdfText, setExtractPdfText] = useState(true);
+  const [ingestLimit, setIngestLimit] = useState(8);
+  const [extractPdfText, setExtractPdfText] = useState(false);
   const [chunkSizeWords, setChunkSizeWords] = useState(220);
   const [chunkOverlapWords, setChunkOverlapWords] = useState(40);
   const [minChunkWords, setMinChunkWords] = useState(60);
+  const [timeBudgetSeconds, setTimeBudgetSeconds] = useState(24);
   const [sources, setSources] = useState<Record<RagSource, boolean>>({
     openalex: true,
     semantic_scholar: true,
@@ -122,10 +123,12 @@ export default function RagWorkspace({
         action: 'ingest',
         namespace: resolvedNamespace,
         papers: papersToIngest.map(mapPaperForRag),
+        maxCandidates: Math.max(1, papersToIngest.length),
         extractPdfText,
         chunkSizeWords,
         chunkOverlapWords,
         minChunkWords,
+        timeBudgetSeconds,
       };
       const result = await postRag<RagIngestResponse>(payload);
       setIngestResult(result);
@@ -158,11 +161,13 @@ export default function RagWorkspace({
         namespace: resolvedNamespace,
         query: ingestQuery.trim(),
         limit: ingestLimit,
+        maxCandidates: ingestLimit,
         sources: selectedSources,
         extractPdfText,
         chunkSizeWords,
         chunkOverlapWords,
         minChunkWords,
+        timeBudgetSeconds,
       };
       const result = await postRag<RagIngestResponse>(payload);
       setIngestResult(result);
@@ -341,6 +346,16 @@ export default function RagWorkspace({
                   </div>
                 </div>
 
+                <div className="w-full sm:w-44">
+                  <label className="block text-[11px] text-slate-600 mb-1">Time budget (sec)</label>
+                  <input
+                    type="number"
+                    value={timeBudgetSeconds}
+                    onChange={(e) => setTimeBudgetSeconds(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-700/50 bg-surface-900 text-white text-sm focus-ring"
+                  />
+                </div>
+
                 <div className="flex flex-wrap items-center gap-3 pt-1">
                   <label className="inline-flex items-center gap-2 text-xs text-slate-400">
                     <input type="checkbox" checked={sources.openalex} onChange={(e) => setSourceChecked('openalex', e.target.checked)} />
@@ -367,6 +382,10 @@ export default function RagWorkspace({
                 >
                   {loadingIngest ? 'Ingesting…' : 'Ingest From Query'}
                 </button>
+
+                <p className="text-[11px] text-slate-600">
+                  Tip: API Gateway times out around 29s. Keep PDF extraction off for quick ingestion, then run smaller batches with PDF on.
+                </p>
               </div>
 
               {ingestError && (
@@ -383,6 +402,21 @@ export default function RagWorkspace({
                   <p className="text-xs text-slate-500">
                     Candidates: {ingestResult.candidateCount ?? '-'} · Discovered: {ingestResult.discoveredCount ?? '-'} · Model: {ingestResult.embeddingModel || 'unknown'}
                   </p>
+                  {(ingestResult.truncatedCandidates ?? 0) > 0 && (
+                    <p className="text-xs text-amber-400">
+                      Deferred {ingestResult.truncatedCandidates} candidates due to ingest cap ({ingestResult.selectedCandidateCount ?? '?'} selected).
+                    </p>
+                  )}
+                  {ingestResult.timedOut && (
+                    <p className="text-xs text-amber-400">
+                      Ingest hit time budget ({ingestResult.timeBudgetSeconds ?? '?'}s). Some papers were deferred; rerun with smaller limits for full coverage.
+                    </p>
+                  )}
+                  {!!ingestResult.pdfExtractionDisabledReason && (
+                    <p className="text-xs text-slate-500">
+                      {ingestResult.pdfExtractionDisabledReason}
+                    </p>
+                  )}
                   {ingestResult.failedPapers.length > 0 && (
                     <p className="text-xs text-amber-400">Failed papers: {ingestResult.failedPapers.length}</p>
                   )}

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from io import BytesIO
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -18,6 +19,12 @@ OPENAI_EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-smal
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 MAX_PDF_TEXT_CHARS = int(os.environ.get("MAX_PDF_TEXT_CHARS", "120000"))
 MAX_CONTEXT_CHARS = int(os.environ.get("RAG_MAX_CONTEXT_CHARS", "16000"))
+PDF_FETCH_TIMEOUT_SECONDS = int(os.environ.get("RAG_PDF_FETCH_TIMEOUT_SECONDS", "12"))
+INGEST_TIME_BUDGET_SECONDS = int(os.environ.get("RAG_INGEST_TIME_BUDGET_SECONDS", "24"))
+EXTERNAL_API_TIMEOUT_SECONDS = int(os.environ.get("RAG_EXTERNAL_API_TIMEOUT_SECONDS", "8"))
+MAX_PDF_PAGES = int(os.environ.get("RAG_MAX_PDF_PAGES", "8"))
+MAX_CHUNKS_PER_PAPER = int(os.environ.get("RAG_MAX_CHUNKS_PER_PAPER", "16"))
+MAX_INGEST_CANDIDATES = int(os.environ.get("RAG_MAX_INGEST_CANDIDATES", "10"))
 
 
 def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -56,6 +63,13 @@ def clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
     except Exception:
         return default
     return max(min_value, min(max_value, parsed))
+
+
+def as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 
 def as_bool(value: Any, default: bool = False) -> bool:
@@ -290,7 +304,7 @@ def discover_openalex(query: str, limit: int) -> List[Dict[str, Any]]:
             "mailto": os.environ.get("OPENALEX_MAILTO", "your-email@example.com"),
         },
         headers={"User-Agent": DEFAULT_USER_AGENT},
-        timeout=30,
+        timeout=EXTERNAL_API_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
     data = response.json() or {}
@@ -351,7 +365,7 @@ def discover_semantic_scholar(query: str, limit: int) -> List[Dict[str, Any]]:
             "fields": "paperId,title,abstract,authors,year,citationCount,publicationDate,venue,url,externalIds,openAccessPdf",
         },
         headers=headers,
-        timeout=30,
+        timeout=EXTERNAL_API_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
     data = response.json() or {}
@@ -388,7 +402,7 @@ def discover_crossref(query: str, limit: int) -> List[Dict[str, Any]]:
             "select": "DOI,title,author,issued,container-title,URL,is-referenced-by-count",
         },
         headers={"User-Agent": DEFAULT_USER_AGENT},
-        timeout=30,
+        timeout=EXTERNAL_API_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
     data = response.json() or {}
@@ -468,6 +482,17 @@ def merge_papers(papers: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(selected.values())
 
 
+def paper_ingest_priority(paper: Dict[str, Any]) -> Tuple[int, int, int, int, int]:
+    abstract_len = len(clean_text(str(paper.get("abstract") or "")))
+    full_text_len = len(clean_text(str(paper.get("fullText") or "")))
+    has_abstract = 1 if abstract_len > 0 else 0
+    has_any_text = 1 if (abstract_len + full_text_len) > 0 else 0
+    has_pdf = 1 if clean_text(str(paper.get("pdfUrl") or "")) else 0
+    citations = as_int(paper.get("citationCount"), 0)
+    year = as_int(paper.get("year"), 0)
+    return (has_any_text, has_abstract, has_pdf, citations, year)
+
+
 def extract_pdf_text(pdf_url: str, max_chars: int) -> str:
     if not pdf_url:
         return ""
@@ -477,7 +502,7 @@ def extract_pdf_text(pdf_url: str, max_chars: int) -> str:
     response = requests.get(
         pdf_url,
         headers={"User-Agent": DEFAULT_USER_AGENT},
-        timeout=45,
+        timeout=PDF_FETCH_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
 
@@ -491,7 +516,9 @@ def extract_pdf_text(pdf_url: str, max_chars: int) -> str:
 
     reader = PdfReader(BytesIO(data))
     text_parts: List[str] = []
-    for page in reader.pages:
+    for page_index, page in enumerate(reader.pages):
+        if page_index >= MAX_PDF_PAGES:
+            break
         page_text = clean_text(page.extract_text() or "")
         if page_text:
             text_parts.append(page_text)
@@ -808,29 +835,51 @@ def synthesize_answer(
     return {"error": None, "payload": payload}
 
 
-def discover_papers(query: str, limit: int, sources: List[str]) -> List[Dict[str, Any]]:
+def discover_papers(
+    query: str,
+    limit: int,
+    sources: List[str],
+    *,
+    max_seconds: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], bool]:
     discovered: List[Dict[str, Any]] = []
     wanted = {s.strip().lower() for s in sources if s}
+    start_time = time.time()
+    budget_hit = False
+
+    def within_budget() -> bool:
+        if not max_seconds:
+            return True
+        return (time.time() - start_time) < max_seconds
 
     if "openalex" in wanted:
-        try:
-            discovered.extend(discover_openalex(query, limit))
-        except Exception as e:
-            print(f"OpenAlex discovery error: {str(e)}")
-
+        if not within_budget():
+            budget_hit = True
+        else:
+            try:
+                discovered.extend(discover_openalex(query, limit))
+            except Exception as e:
+                print(f"OpenAlex discovery error: {str(e)}")
+ 
     if "semantic_scholar" in wanted or "semanticscholar" in wanted:
-        try:
-            discovered.extend(discover_semantic_scholar(query, limit))
-        except Exception as e:
-            print(f"Semantic Scholar discovery error: {str(e)}")
+        if not within_budget():
+            budget_hit = True
+        else:
+            try:
+                discovered.extend(discover_semantic_scholar(query, limit))
+            except Exception as e:
+                print(f"Semantic Scholar discovery error: {str(e)}")
 
     if "crossref" in wanted:
-        try:
-            discovered.extend(discover_crossref(query, limit))
-        except Exception as e:
-            print(f"Crossref discovery error: {str(e)}")
+        if not within_budget():
+            budget_hit = True
+        else:
+            try:
+                discovered.extend(discover_crossref(query, limit))
+            except Exception as e:
+                print(f"Crossref discovery error: {str(e)}")
 
-    return merge_papers(discovered)
+    return merge_papers(discovered), budget_hit
 
 
 def ingest_papers(
@@ -840,14 +889,30 @@ def ingest_papers(
     chunk_size_words: int,
     overlap_words: int,
     min_chunk_words: int,
+    *,
+    max_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
     ingested_papers = 0
     ingested_chunks = 0
     skipped: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
+    timed_out = False
+    start_time = time.time()
 
     for raw in papers:
+        if max_seconds and (time.time() - start_time) >= max_seconds:
+            timed_out = True
+            paper = normalize_paper(raw)
+            skipped.append(
+                {
+                    "paperId": paper.get("paperId"),
+                    "title": paper.get("title"),
+                    "reason": "Deferred due to ingest time budget (avoid API Gateway timeout). Retry with lower limit or no PDF extraction.",
+                }
+            )
+            continue
+
         paper = normalize_paper(raw)
         try:
             text_parts: List[str] = []
@@ -856,13 +921,24 @@ def ingest_papers(
             if paper.get("abstract"):
                 text_parts.append(paper["abstract"])
 
-            if extract_pdf and paper.get("pdfUrl"):
-                try:
-                    pdf_text = extract_pdf_text(paper["pdfUrl"], MAX_PDF_TEXT_CHARS)
-                    if pdf_text:
-                        text_parts.append(pdf_text)
-                except Exception as pdf_error:
-                    print(f"PDF extraction failed for {paper.get('paperId')}: {str(pdf_error)}")
+            should_extract_pdf = extract_pdf and bool(paper.get("pdfUrl"))
+            if should_extract_pdf:
+                if max_seconds and (time.time() - start_time) >= max(1, max_seconds - 4):
+                    skipped.append(
+                        {
+                            "paperId": paper.get("paperId"),
+                            "title": paper.get("title"),
+                            "reason": "Skipped PDF extraction due to remaining time budget.",
+                        }
+                    )
+                    should_extract_pdf = False
+                if should_extract_pdf:
+                    try:
+                        pdf_text = extract_pdf_text(paper["pdfUrl"], MAX_PDF_TEXT_CHARS)
+                        if pdf_text:
+                            text_parts.append(pdf_text)
+                    except Exception as pdf_error:
+                        print(f"PDF extraction failed for {paper.get('paperId')}: {str(pdf_error)}")
 
             merged_text = clean_text("\n\n".join([x for x in text_parts if x]))
             if not merged_text:
@@ -886,6 +962,20 @@ def ingest_papers(
                 )
                 continue
 
+            if len(chunks) > MAX_CHUNKS_PER_PAPER:
+                chunks = chunks[:MAX_CHUNKS_PER_PAPER]
+
+            if max_seconds and (time.time() - start_time) >= max(1, max_seconds - 3):
+                timed_out = True
+                skipped.append(
+                    {
+                        "paperId": paper.get("paperId"),
+                        "title": paper.get("title"),
+                        "reason": "Deferred due to remaining ingest time budget before embedding/upsert.",
+                    }
+                )
+                continue
+
             vectors = openai_embed_texts(chunks, embed_model)
             if len(vectors) != len(chunks):
                 raise RuntimeError("Embedding count mismatch")
@@ -897,8 +987,8 @@ def ingest_papers(
                     "paperId": paper.get("paperId"),
                     "title": paper.get("title"),
                     "authors": ", ".join(paper.get("authors", [])[:10]),
-                    "year": int(paper.get("year") or 0),
-                    "citationCount": int(paper.get("citationCount") or 0),
+                    "year": as_int(paper.get("year"), 0),
+                    "citationCount": as_int(paper.get("citationCount"), 0),
                     "venue": paper.get("venue") or "",
                     "doi": paper.get("doi") or "",
                     "url": paper.get("url") or "",
@@ -928,26 +1018,55 @@ def ingest_papers(
         "ingestedChunks": ingested_chunks,
         "skippedPapers": skipped,
         "failedPapers": failed,
+        "timedOut": timed_out,
+        "timeBudgetSeconds": max_seconds,
     }
 
 
 def handle_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
     namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
     query = clean_text(str(body.get("query") or ""))
-    limit = clamp_int(body.get("limit"), 15, 1, 100)
+    limit = clamp_int(body.get("limit"), 8, 1, 50)
+    max_candidates = clamp_int(body.get("maxCandidates"), MAX_INGEST_CANDIDATES, 1, 40)
     extract_pdf = as_bool(body.get("extractPdfText"), True)
     chunk_size_words = clamp_int(body.get("chunkSizeWords"), 220, 80, 800)
     overlap_words = clamp_int(body.get("chunkOverlapWords"), 40, 0, 200)
     min_chunk_words = clamp_int(body.get("minChunkWords"), 60, 20, 200)
+    time_budget = clamp_int(body.get("timeBudgetSeconds"), INGEST_TIME_BUDGET_SECONDS, 8, 28)
 
     explicit_papers = body.get("papers") if isinstance(body.get("papers"), list) else []
     sources = body.get("sources") if isinstance(body.get("sources"), list) else ["openalex", "semantic_scholar", "crossref"]
 
     discovered: List[Dict[str, Any]] = []
+    discovery_budget = max(5, min(14, time_budget // 2))
+    discovery_budget_hit = False
     if query:
-        discovered = discover_papers(query, limit, sources)
+        discovered, discovery_budget_hit = discover_papers(
+            query,
+            limit,
+            sources,
+            max_seconds=discovery_budget,
+        )
 
     all_candidates = merge_papers([*explicit_papers, *discovered])
+    if query:
+        all_candidates.sort(key=paper_ingest_priority, reverse=True)
+
+    selected_count = min(len(all_candidates), max_candidates)
+    if query:
+        selected_count = min(selected_count, limit)
+    selected_candidates = all_candidates[:selected_count]
+    deferred_due_cap = all_candidates[selected_count:]
+
+    extract_pdf_effective = extract_pdf
+    pdf_extraction_disabled_reason: Optional[str] = None
+    if query and extract_pdf:
+        extract_pdf_effective = False
+        pdf_extraction_disabled_reason = "PDF extraction is disabled for query-based ingestion to stay within API Gateway timeout."
+    elif extract_pdf and len(selected_candidates) > 6:
+        extract_pdf_effective = False
+        pdf_extraction_disabled_reason = "PDF extraction was disabled because candidate volume is too high for synchronous ingestion."
+
     if not all_candidates:
         return {
             "namespace": namespace,
@@ -960,18 +1079,40 @@ def handle_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     stats = ingest_papers(
-        papers=all_candidates,
+        papers=selected_candidates,
         namespace=namespace,
-        extract_pdf=extract_pdf,
+        extract_pdf=extract_pdf_effective,
         chunk_size_words=chunk_size_words,
         overlap_words=overlap_words,
         min_chunk_words=min_chunk_words,
+        max_seconds=max(6, time_budget - discovery_budget),
     )
+    if deferred_due_cap:
+        stats["skippedPapers"] = (
+            [
+                {
+                    "paperId": p.get("paperId"),
+                    "title": p.get("title"),
+                    "reason": f"Deferred due to ingest candidate cap ({selected_count}/{len(all_candidates)}). Retry in smaller batches.",
+                }
+                for p in deferred_due_cap
+            ]
+            + stats.get("skippedPapers", [])
+        )
+
     return {
         "namespace": namespace,
         "discoveredCount": len(discovered),
         "candidateCount": len(all_candidates),
+        "selectedCandidateCount": len(selected_candidates),
+        "candidateCap": selected_count,
+        "truncatedCandidates": len(deferred_due_cap),
         **stats,
+        "requestedPdfExtraction": extract_pdf,
+        "effectivePdfExtraction": extract_pdf_effective,
+        "pdfExtractionDisabledReason": pdf_extraction_disabled_reason,
+        "discoveryBudgetSeconds": discovery_budget,
+        "discoveryBudgetHit": discovery_budget_hit,
         "embeddingModel": (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip(),
         "vectorProvider": "pinecone",
     }

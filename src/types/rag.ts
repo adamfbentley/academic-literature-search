@@ -9,12 +9,14 @@ export interface RagIngestRequest {
   namespace?: string;
   query?: string;
   limit?: number;
+  maxCandidates?: number;
   sources?: RagSource[];
   papers?: Paper[];
   extractPdfText?: boolean;
   chunkSizeWords?: number;
   chunkOverlapWords?: number;
   minChunkWords?: number;
+  timeBudgetSeconds?: number;
 }
 
 export interface RagSkippedPaper {
@@ -33,13 +35,23 @@ export interface RagIngestResponse {
   namespace: string;
   discoveredCount?: number;
   candidateCount?: number;
+  selectedCandidateCount?: number;
+  candidateCap?: number;
+  truncatedCandidates?: number;
   ingestedPapers: number;
   ingestedChunks: number;
   skippedPapers: RagSkippedPaper[];
   failedPapers: RagFailedPaper[];
+  requestedPdfExtraction?: boolean;
+  effectivePdfExtraction?: boolean;
+  pdfExtractionDisabledReason?: string | null;
+  discoveryBudgetSeconds?: number;
+  discoveryBudgetHit?: boolean;
   embeddingModel?: string;
   vectorProvider?: string;
   message?: string;
+  timedOut?: boolean;
+  timeBudgetSeconds?: number;
 }
 
 export interface RagReference {
