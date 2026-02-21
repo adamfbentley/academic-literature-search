@@ -26,6 +26,8 @@ MAX_PDF_PAGES = int(os.environ.get("RAG_MAX_PDF_PAGES", "8"))
 MAX_CHUNKS_PER_PAPER = int(os.environ.get("RAG_MAX_CHUNKS_PER_PAPER", "16"))
 MAX_INGEST_CANDIDATES = int(os.environ.get("RAG_MAX_INGEST_CANDIDATES", "10"))
 MAX_QUERY_PDF_PAPERS = int(os.environ.get("RAG_MAX_QUERY_PDF_PAPERS", "2"))
+HYBRID_RERANK_MULTIPLIER = int(os.environ.get("RAG_HYBRID_RERANK_MULTIPLIER", "4"))
+INSIGHTS_MAX_PAPERS = int(os.environ.get("RAG_INSIGHTS_MAX_PAPERS", "24"))
 
 
 def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -581,6 +583,197 @@ def chunk_text(text: str, chunk_size_words: int, overlap_words: int, min_words: 
     return chunks
 
 
+def split_sections(text: str) -> List[Dict[str, str]]:
+    clean = clean_text(text)
+    if not clean:
+        return []
+    heading_patterns = [
+        (r"\babstract\b", "abstract"),
+        (r"\bintroduction\b", "introduction"),
+        (r"\bbackground\b", "background"),
+        (r"\brelated work\b", "related_work"),
+        (r"\bmethods?\b", "methods"),
+        (r"\bmaterials and methods\b", "methods"),
+        (r"\bexperimental setup\b", "methods"),
+        (r"\bdataset[s]?\b", "dataset"),
+        (r"\bresults?\b", "results"),
+        (r"\banalysis\b", "analysis"),
+        (r"\bdiscussion\b", "discussion"),
+        (r"\blimitations?\b", "limitations"),
+        (r"\bfuture work\b", "future_work"),
+        (r"\bconclusion[s]?\b", "conclusion"),
+    ]
+
+    markers: List[Tuple[int, str]] = [(0, "body")]
+    for pattern, label in heading_patterns:
+        for m in re.finditer(pattern, clean, flags=re.IGNORECASE):
+            if m.start() > 0:
+                markers.append((m.start(), label))
+    markers = sorted(markers, key=lambda x: x[0])
+    dedup: List[Tuple[int, str]] = []
+    seen_positions: set = set()
+    for pos, label in markers:
+        if pos in seen_positions:
+            continue
+        seen_positions.add(pos)
+        dedup.append((pos, label))
+
+    sections: List[Dict[str, str]] = []
+    for idx, (start, label) in enumerate(dedup):
+        end = dedup[idx + 1][0] if idx + 1 < len(dedup) else len(clean)
+        segment = clean_text(clean[start:end])
+        if not segment:
+            continue
+        sections.append({"section": label, "text": segment})
+    if not sections:
+        return [{"section": "body", "text": clean}]
+    return sections
+
+
+def chunk_text_with_sections(
+    text: str,
+    chunk_size_words: int,
+    overlap_words: int,
+    min_words: int,
+) -> List[Dict[str, Any]]:
+    sections = split_sections(text)
+    if not sections:
+        return []
+    out: List[Dict[str, Any]] = []
+    for section_idx, section_row in enumerate(sections):
+        section_name = clean_text(str(section_row.get("section") or "body")) or "body"
+        for chunk in chunk_text(section_row.get("text", ""), chunk_size_words, overlap_words, min_words):
+            out.append(
+                {
+                    "text": chunk,
+                    "section": section_name,
+                    "sectionIndex": section_idx,
+                }
+            )
+    return out
+
+
+def sentence_split(text: str) -> List[str]:
+    normalized = re.sub(r"\s+", " ", clean_text(text))
+    if not normalized:
+        return []
+    return [clean_text(s) for s in re.split(r"(?<=[.!?])\s+", normalized) if clean_text(s)]
+
+
+def keyword_sentence(text: str, keywords: List[str]) -> str:
+    sentences = sentence_split(text)
+    for sentence in sentences:
+        lower_sentence = sentence.lower()
+        if any(k in lower_sentence for k in keywords):
+            return sentence[:450]
+    return sentences[0][:450] if sentences else ""
+
+
+def extract_dataset_size(text: str) -> str:
+    patterns = [
+        r"\b(n\s*=\s*\d[\d,]*)\b",
+        r"\b(\d[\d,]*\s+(?:participants|patients|subjects|samples|records|observations))\b",
+        r"\b(dataset\s+of\s+\d[\d,]*)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return clean_text(match.group(1))
+    return ""
+
+
+def extract_model_type(text: str) -> str:
+    labels = [
+        "randomized controlled trial",
+        "meta-analysis",
+        "systematic review",
+        "transformer",
+        "bert",
+        "gpt",
+        "cnn",
+        "rnn",
+        "xgboost",
+        "random forest",
+        "bayesian",
+        "difference-in-differences",
+        "regression",
+    ]
+    lower_text = text.lower()
+    for label in labels:
+        if label in lower_text:
+            return label
+    return ""
+
+
+def extract_structured_fields(text: str) -> Dict[str, str]:
+    clean = clean_text(text)
+    if not clean:
+        return {
+            "researchQuestion": "",
+            "methodology": "",
+            "datasetSize": "",
+            "modelType": "",
+            "keyFindings": "",
+            "limitationsText": "",
+            "futureWork": "",
+        }
+
+    return {
+        "researchQuestion": keyword_sentence(
+            clean, ["we investigate", "this paper studies", "research question", "we ask whether", "aim of this"]
+        ),
+        "methodology": keyword_sentence(
+            clean, ["method", "we use", "we propose", "experiment", "trial", "survey", "model", "approach"]
+        ),
+        "datasetSize": extract_dataset_size(clean),
+        "modelType": extract_model_type(clean),
+        "keyFindings": keyword_sentence(
+            clean, ["we find", "results show", "our results", "we observe", "conclude", "significant"]
+        ),
+        "limitationsText": keyword_sentence(
+            clean, ["limitation", "limited by", "constraint", "threat to validity", "caution"]
+        ),
+        "futureWork": keyword_sentence(clean, ["future work", "further research", "next steps", "remain unknown"]),
+    }
+
+
+def tokenize_for_overlap(text: str) -> set:
+    return {t for t in re.findall(r"[a-z0-9]{3,}", clean_text(text).lower())}
+
+
+def lexical_overlap_score(query: str, candidate_text: str) -> float:
+    q_tokens = tokenize_for_overlap(query)
+    if not q_tokens:
+        return 0.0
+    c_tokens = tokenize_for_overlap(candidate_text)
+    if not c_tokens:
+        return 0.0
+    return len(q_tokens.intersection(c_tokens)) / float(len(q_tokens))
+
+
+def hybrid_rerank_matches(question: str, matches: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+    if not matches:
+        return []
+    semantic_scores = [float(m.get("score", 0.0) or 0.0) for m in matches]
+    min_score = min(semantic_scores)
+    max_score = max(semantic_scores)
+    span = max(max_score - min_score, 1e-8)
+
+    ranked: List[Tuple[float, Dict[str, Any]]] = []
+    for match in matches:
+        meta = match.get("metadata") or {}
+        semantic = (float(match.get("score", 0.0) or 0.0) - min_score) / span
+        lexical = lexical_overlap_score(question, str(meta.get("chunkText") or ""))
+        citation_boost = min(as_int(meta.get("citationCount"), 0), 5000) / 5000.0
+        final_score = (0.70 * semantic) + (0.25 * lexical) + (0.05 * citation_boost)
+        enriched = dict(match)
+        enriched["hybridScore"] = final_score
+        ranked.append((final_score, enriched))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [row[1] for row in ranked[:top_k]]
+
+
 def _paper_key(meta: Dict[str, Any]) -> str:
     paper_id = clean_text(str(meta.get("paperId") or ""))
     if paper_id:
@@ -741,9 +934,11 @@ def build_context(matches: List[Dict[str, Any]], paper_to_citation: Dict[str, in
         title = clean_text(str(meta.get("title") or "Untitled"))
         year = str(meta.get("year") or "n.d.")
         score = float(match.get("score", 0.0) or 0.0)
+        hybrid_score = float(match.get("hybridScore", score) or 0.0)
+        section = clean_text(str(meta.get("section") or "body")) or "body"
 
         block = (
-            f"Chunk {idx} | Citation {citation_tag} | Title: {title} | Year: {year} | Score: {score:.4f}\n"
+            f"Chunk {idx} | Citation {citation_tag} | Title: {title} | Year: {year} | Section: {section} | Score: {score:.4f} | Hybrid: {hybrid_score:.4f}\n"
             f"{chunk_text_value}\n"
         )
         if total_chars + len(block) > MAX_CONTEXT_CHARS:
@@ -757,6 +952,8 @@ def build_context(matches: List[Dict[str, Any]], paper_to_citation: Dict[str, in
                 "paperId": meta.get("paperId"),
                 "title": title,
                 "score": score,
+                "hybridScore": hybrid_score,
+                "section": section,
                 "chunkIndex": meta.get("chunkIndex"),
                 "snippet": chunk_text_value[:400],
             }
@@ -985,8 +1182,8 @@ def ingest_papers(
                     )
                     continue
 
-            chunks = chunk_text(merged_text, chunk_size_words, overlap_words, min_chunk_words)
-            if not chunks:
+            chunk_rows = chunk_text_with_sections(merged_text, chunk_size_words, overlap_words, min_chunk_words)
+            if not chunk_rows:
                 skipped.append(
                     {
                         "paperId": paper.get("paperId"),
@@ -996,8 +1193,8 @@ def ingest_papers(
                 )
                 continue
 
-            if len(chunks) > MAX_CHUNKS_PER_PAPER:
-                chunks = chunks[:MAX_CHUNKS_PER_PAPER]
+            if len(chunk_rows) > MAX_CHUNKS_PER_PAPER:
+                chunk_rows = chunk_rows[:MAX_CHUNKS_PER_PAPER]
 
             if max_seconds and (time.time() - start_time) >= max(1, max_seconds - 3):
                 timed_out = True
@@ -1010,12 +1207,16 @@ def ingest_papers(
                 )
                 continue
 
-            vectors = openai_embed_texts(chunks, embed_model)
-            if len(vectors) != len(chunks):
+            chunk_texts = [clean_text(str(row.get("text") or "")) for row in chunk_rows]
+            paper_structured = extract_structured_fields(merged_text)
+            vectors = openai_embed_texts(chunk_texts, embed_model)
+            if len(vectors) != len(chunk_rows):
                 raise RuntimeError("Embedding count mismatch")
 
             upsert_rows: List[Dict[str, Any]] = []
-            for idx, (chunk_value, embedding) in enumerate(zip(chunks, vectors)):
+            for idx, (chunk_row, embedding) in enumerate(zip(chunk_rows, vectors)):
+                chunk_value = clean_text(str(chunk_row.get("text") or ""))
+                section_name = clean_text(str(chunk_row.get("section") or "body")) or "body"
                 vector_id = f"{paper['paperId']}::chunk::{idx}"
                 metadata = {
                     "paperId": paper.get("paperId"),
@@ -1029,7 +1230,16 @@ def ingest_papers(
                     "pdfUrl": paper.get("pdfUrl") or "",
                     "source": paper.get("source") or "",
                     "chunkIndex": idx,
+                    "section": section_name,
+                    "sectionIndex": as_int(chunk_row.get("sectionIndex"), 0),
                     "chunkText": chunk_value[:4000],
+                    "researchQuestion": paper_structured.get("researchQuestion") or "",
+                    "methodology": paper_structured.get("methodology") or "",
+                    "datasetSize": paper_structured.get("datasetSize") or "",
+                    "modelType": paper_structured.get("modelType") or "",
+                    "keyFindings": paper_structured.get("keyFindings") or "",
+                    "limitationsText": paper_structured.get("limitationsText") or "",
+                    "futureWork": paper_structured.get("futureWork") or "",
                 }
                 upsert_rows.append({"id": vector_id, "values": embedding, "metadata": metadata})
 
@@ -1037,7 +1247,7 @@ def ingest_papers(
                 pinecone_upsert(upsert_rows[i : i + 100], namespace)
 
             ingested_papers += 1
-            ingested_chunks += len(chunks)
+            ingested_chunks += len(chunk_rows)
         except Exception as e:
             failed.append(
                 {
@@ -1170,6 +1380,296 @@ def handle_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _paper_profiles_from_matches(
+    matches: List[Dict[str, Any]],
+    paper_to_citation: Dict[str, int],
+) -> List[Dict[str, Any]]:
+    by_paper: Dict[str, Dict[str, Any]] = {}
+    for match in matches:
+        meta = match.get("metadata") or {}
+        key = _paper_key(meta)
+        score = float(match.get("hybridScore", match.get("score", 0.0)) or 0.0)
+        existing = by_paper.get(key)
+        if existing and existing.get("score", 0.0) >= score:
+            continue
+        citation_number = paper_to_citation.get(key)
+        by_paper[key] = {
+            "citationNumber": citation_number,
+            "paperId": meta.get("paperId"),
+            "title": meta.get("title"),
+            "year": as_int(meta.get("year"), 0),
+            "source": meta.get("source"),
+            "methodology": clean_text(str(meta.get("methodology") or "")),
+            "datasetSize": clean_text(str(meta.get("datasetSize") or "")),
+            "modelType": clean_text(str(meta.get("modelType") or "")),
+            "keyFindings": clean_text(str(meta.get("keyFindings") or "")),
+            "limitations": clean_text(str(meta.get("limitationsText") or "")),
+            "futureWork": clean_text(str(meta.get("futureWork") or "")),
+            "score": score,
+        }
+    items = list(by_paper.values())
+    items.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    return items
+
+
+def heuristic_research_gaps(paper_profiles: List[Dict[str, Any]]) -> List[str]:
+    gaps: List[str] = []
+    limitation_sentences = [p.get("limitations") for p in paper_profiles if p.get("limitations")]
+    future_work_sentences = [p.get("futureWork") for p in paper_profiles if p.get("futureWork")]
+    if limitation_sentences:
+        common_limit_words = [
+            "small sample",
+            "single center",
+            "generalizability",
+            "demographic",
+            "short follow-up",
+            "observational",
+        ]
+        for token in common_limit_words:
+            count = sum(1 for sentence in limitation_sentences if token in sentence.lower())
+            if count >= 2:
+                gaps.append(
+                    f"Multiple studies report '{token}' as a recurring limitation, suggesting under-covered evidence in that dimension."
+                )
+    if future_work_sentences:
+        gaps.append("Future-work statements across papers indicate unresolved questions that need controlled validation.")
+    if not gaps and limitation_sentences:
+        gaps.append("The corpus repeatedly flags methodological constraints; targeted replication studies are needed.")
+    return gaps[:6]
+
+
+def synthesize_insights_payload(
+    question: str,
+    context_text: str,
+    references: List[Dict[str, Any]],
+    paper_profiles: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        timeline = []
+        for profile in sorted(paper_profiles, key=lambda x: x.get("year", 0)):
+            if profile.get("year"):
+                citation_suffix = ""
+                if profile.get("citationNumber"):
+                    citation_suffix = f"[{profile.get('citationNumber')}]"
+                timeline.append(
+                    f"{profile.get('year')}: {profile.get('title')} {citation_suffix}".strip()
+                )
+        methodology_groups: Dict[str, int] = {}
+        for profile in paper_profiles:
+            label = clean_text(str(profile.get("methodology") or "")).lower()
+            if not label:
+                continue
+            methodology_groups[label] = methodology_groups.get(label, 0) + 1
+        agreement_clusters = [
+            f"{method} appears in {count} high-ranked papers."
+            for method, count in sorted(methodology_groups.items(), key=lambda item: item[1], reverse=True)[:4]
+        ]
+        return {
+            "agreement_clusters": agreement_clusters,
+            "contradictions": [],
+            "methodological_differences": [
+                p.get("methodology") for p in paper_profiles if p.get("methodology")
+            ][:6],
+            "timeline_evolution": timeline[:8],
+            "research_gaps": heuristic_research_gaps(paper_profiles),
+        }
+
+    refs_short = "\n".join(
+        [f"[{r['citationNumber']}] {r.get('title')} ({r.get('year') or 'n.d.'})" for r in references]
+    )
+    structured_rows = []
+    for profile in paper_profiles[:16]:
+        structured_rows.append(
+            {
+                "citation": profile.get("citationNumber"),
+                "title": profile.get("title"),
+                "year": profile.get("year"),
+                "methodology": profile.get("methodology"),
+                "datasetSize": profile.get("datasetSize"),
+                "modelType": profile.get("modelType"),
+                "keyFindings": profile.get("keyFindings"),
+                "limitations": profile.get("limitations"),
+                "futureWork": profile.get("futureWork"),
+            }
+        )
+    payload = openai_chat_json(
+        system_prompt=(
+            "You are a literature intelligence engine. Only use provided context and structured rows. "
+            "Every factual statement must be source-grounded. Prefer concise bullets."
+        ),
+        user_prompt=(
+            f"Question: {question}\n\n"
+            "Allowed citations:\n"
+            f"{refs_short}\n\n"
+            "Structured paper rows:\n"
+            f"{json.dumps(structured_rows)}\n\n"
+            "Retrieved context:\n"
+            f"{context_text}\n\n"
+            "Return JSON:\n"
+            "{\n"
+            '  "agreement_clusters": ["... [n]"],\n'
+            '  "contradictions": ["... [n][m]"],\n'
+            '  "methodological_differences": ["... [n]"],\n'
+            '  "timeline_evolution": ["YYYY: ... [n]"],\n'
+            '  "research_gaps": ["... [n]"]\n'
+            "}"
+        ),
+        model=(os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+        max_tokens=1400,
+        temperature=0.1,
+    )
+    return {
+        "agreement_clusters": payload.get("agreement_clusters") or [],
+        "contradictions": payload.get("contradictions") or [],
+        "methodological_differences": payload.get("methodological_differences") or [],
+        "timeline_evolution": payload.get("timeline_evolution") or [],
+        "research_gaps": payload.get("research_gaps") or [],
+    }
+
+
+def handle_insights(body: Dict[str, Any]) -> Dict[str, Any]:
+    question = clean_text(str(body.get("question") or "Map this research area."))
+    namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
+    top_k = clamp_int(body.get("topK"), 12, 3, 40)
+    citation_style = clean_text(str(body.get("citationStyle") or "apa")).lower()
+    if citation_style not in {"apa", "mla", "ieee"}:
+        citation_style = "apa"
+    metadata_filter = body.get("metadataFilter") if isinstance(body.get("metadataFilter"), dict) else None
+    return_contexts = as_bool(body.get("returnContexts"), False)
+
+    embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
+    q_embeddings = openai_embed_texts([question], embed_model)
+    if not q_embeddings:
+        raise RuntimeError("Failed to embed insights query")
+
+    raw_matches = pinecone_query(
+        query_vector=q_embeddings[0],
+        top_k=min(100, top_k * HYBRID_RERANK_MULTIPLIER),
+        namespace=namespace,
+        metadata_filter=metadata_filter,
+    )
+    matches = hybrid_rerank_matches(question, raw_matches, top_k)
+    references, paper_to_citation = build_references(matches, citation_style)
+    context_text, used_chunks = build_context(matches, paper_to_citation)
+    paper_profiles = _paper_profiles_from_matches(matches[:INSIGHTS_MAX_PAPERS], paper_to_citation)
+
+    if not matches:
+        return {
+            "question": question,
+            "insights": {
+                "agreementClusters": [],
+                "contradictions": [],
+                "methodologicalDifferences": [],
+                "timelineEvolution": [],
+                "researchGaps": [],
+                "paperProfiles": [],
+            },
+            "references": [],
+            "retrieval": {"topK": top_k, "returned": 0, "namespace": namespace},
+        }
+
+    insights_payload = synthesize_insights_payload(question, context_text, references, paper_profiles)
+    response: Dict[str, Any] = {
+        "question": question,
+        "insights": {
+            "agreementClusters": insights_payload.get("agreement_clusters") or [],
+            "contradictions": insights_payload.get("contradictions") or [],
+            "methodologicalDifferences": insights_payload.get("methodological_differences") or [],
+            "timelineEvolution": insights_payload.get("timeline_evolution") or [],
+            "researchGaps": insights_payload.get("research_gaps") or [],
+            "paperProfiles": paper_profiles,
+        },
+        "references": references,
+        "retrieval": {
+            "topK": top_k,
+            "returned": len(matches),
+            "namespace": namespace,
+            "embeddingModel": embed_model,
+            "chatModel": (os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+            "mode": "hybrid",
+        },
+    }
+    if return_contexts:
+        response["contexts"] = used_chunks
+    return response
+
+
+def handle_gaps(body: Dict[str, Any]) -> Dict[str, Any]:
+    question = clean_text(str(body.get("question") or "What are the major research gaps?"))
+    namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
+    top_k = clamp_int(body.get("topK"), 12, 3, 40)
+    citation_style = clean_text(str(body.get("citationStyle") or "apa")).lower()
+    if citation_style not in {"apa", "mla", "ieee"}:
+        citation_style = "apa"
+    metadata_filter = body.get("metadataFilter") if isinstance(body.get("metadataFilter"), dict) else None
+
+    embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
+    q_embeddings = openai_embed_texts([question], embed_model)
+    if not q_embeddings:
+        raise RuntimeError("Failed to embed gaps query")
+
+    raw_matches = pinecone_query(
+        query_vector=q_embeddings[0],
+        top_k=min(100, top_k * HYBRID_RERANK_MULTIPLIER),
+        namespace=namespace,
+        metadata_filter=metadata_filter,
+    )
+    matches = hybrid_rerank_matches(question, raw_matches, top_k)
+    references, paper_to_citation = build_references(matches, citation_style)
+    context_text, _ = build_context(matches, paper_to_citation)
+    paper_profiles = _paper_profiles_from_matches(matches[:INSIGHTS_MAX_PAPERS], paper_to_citation)
+    gaps = heuristic_research_gaps(paper_profiles)
+
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if api_key and matches:
+        refs_short = "\n".join(
+            [f"[{r['citationNumber']}] {r.get('title')} ({r.get('year') or 'n.d.'})" for r in references]
+        )
+        gap_payload = openai_chat_json(
+            system_prompt=(
+                "Identify evidence-grounded research gaps only from provided material. "
+                "Every gap must include citation tags [n]."
+            ),
+            user_prompt=(
+                f"Question: {question}\n\n"
+                f"Allowed citations:\n{refs_short}\n\n"
+                f"Context:\n{context_text}\n\n"
+                "Return JSON with:\n"
+                "{\n"
+                '  "gaps": ["gap statement [n]"],\n'
+                '  "supporting_evidence": ["evidence statement [n]"]\n'
+                "}"
+            ),
+            model=(os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+            max_tokens=900,
+            temperature=0.1,
+        )
+        gaps = gap_payload.get("gaps") or gaps
+        supporting_evidence = gap_payload.get("supporting_evidence") or []
+    else:
+        supporting_evidence = [
+            p.get("limitations")
+            for p in paper_profiles
+            if p.get("limitations")
+        ][:8]
+
+    return {
+        "question": question,
+        "gaps": gaps,
+        "supportingEvidence": supporting_evidence,
+        "references": references,
+        "retrieval": {
+            "topK": top_k,
+            "returned": len(matches),
+            "namespace": namespace,
+            "embeddingModel": embed_model,
+            "chatModel": (os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+            "mode": "hybrid",
+        },
+    }
+
+
 def handle_ask(body: Dict[str, Any]) -> Dict[str, Any]:
     question = clean_text(str(body.get("question") or ""))
     if not question:
@@ -1191,12 +1691,13 @@ def handle_ask(body: Dict[str, Any]) -> Dict[str, Any]:
     if not q_embeddings:
         raise RuntimeError("Failed to embed question")
 
-    matches = pinecone_query(
+    raw_matches = pinecone_query(
         query_vector=q_embeddings[0],
-        top_k=top_k,
+        top_k=min(100, top_k * HYBRID_RERANK_MULTIPLIER),
         namespace=namespace,
         metadata_filter=metadata_filter,
     )
+    matches = hybrid_rerank_matches(question, raw_matches, top_k)
     if not matches:
         return {
             "question": question,
@@ -1235,6 +1736,7 @@ def handle_ask(body: Dict[str, Any]) -> Dict[str, Any]:
             "namespace": namespace,
             "embeddingModel": embed_model,
             "chatModel": (os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+            "mode": "hybrid",
         },
     }
     if return_contexts:
@@ -1258,7 +1760,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             result = handle_ask(body)
             return create_response(200, result)
 
-        return create_response(400, {"error": "Invalid action. Use 'ingest' or 'ask'."})
+        if action == "insights":
+            result = handle_insights(body)
+            return create_response(200, result)
+
+        if action == "gaps":
+            result = handle_gaps(body)
+            return create_response(200, result)
+
+        return create_response(400, {"error": "Invalid action. Use 'ingest', 'ask', 'insights', or 'gaps'."})
     except ValueError as e:
         return create_response(400, {"error": str(e)})
     except Exception as e:

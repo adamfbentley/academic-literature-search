@@ -3,6 +3,7 @@ import { Paper } from '@/types/paper';
 export type RagSource = 'openalex' | 'semantic_scholar' | 'crossref';
 export type RagTask = 'qa' | 'synthesis' | 'comparison' | 'outline';
 export type CitationStyle = 'apa' | 'mla' | 'ieee';
+export type RagAction = 'ask' | 'ingest' | 'insights' | 'gaps';
 
 export interface RagIngestRequest {
   action: 'ingest';
@@ -75,6 +76,7 @@ export interface RagRetrievalMeta {
   namespace: string;
   embeddingModel?: string;
   chatModel?: string;
+  mode?: string;
 }
 
 export interface RagContext {
@@ -98,4 +100,53 @@ export interface RagAskResponse {
   references: RagReference[];
   retrieval: RagRetrievalMeta;
   contexts?: RagContext[];
+}
+
+export interface RagAskRequest {
+  action: 'ask';
+  question: string;
+  namespace?: string;
+  task?: RagTask;
+  citationStyle?: CitationStyle;
+  topK?: number;
+  returnContexts?: boolean;
+  metadataFilter?: Record<string, unknown>;
+}
+
+export interface RagInsightProfile {
+  citationNumber?: number;
+  paperId?: string;
+  title?: string;
+  year?: number;
+  source?: string;
+  methodology?: string;
+  datasetSize?: string;
+  modelType?: string;
+  keyFindings?: string;
+  limitations?: string;
+  futureWork?: string;
+  score?: number;
+}
+
+export interface RagInsightsResponse {
+  question: string;
+  insights: {
+    agreementClusters: string[];
+    contradictions: string[];
+    methodologicalDifferences: string[];
+    timelineEvolution: string[];
+    researchGaps: string[];
+    paperProfiles: RagInsightProfile[];
+  };
+  references: RagReference[];
+  retrieval: RagRetrievalMeta;
+  contexts?: RagContext[];
+}
+
+export interface RagGapsResponse {
+  question: string;
+  gaps: string[];
+  supportingEvidence: string[];
+  references: RagReference[];
+  retrieval: RagRetrievalMeta;
 }

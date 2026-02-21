@@ -3,10 +3,13 @@
 import { useMemo, useState } from 'react';
 import { Paper } from '@/types/paper';
 import {
+  RagAskRequest,
   CitationStyle,
   RagAskResponse,
+  RagGapsResponse,
   RagIngestRequest,
   RagIngestResponse,
+  RagInsightsResponse,
   RagSource,
   RagTask,
 } from '@/types/rag';
@@ -75,6 +78,12 @@ export default function RagWorkspace({
   const [loadingAsk, setLoadingAsk] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
   const [askResult, setAskResult] = useState<RagAskResponse | null>(null);
+  const [loadingInsights, setLoadingInsights] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
+  const [insightsResult, setInsightsResult] = useState<RagInsightsResponse | null>(null);
+  const [loadingGaps, setLoadingGaps] = useState(false);
+  const [gapsError, setGapsError] = useState<string | null>(null);
+  const [gapsResult, setGapsResult] = useState<RagGapsResponse | null>(null);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -181,12 +190,7 @@ export default function RagWorkspace({
     }
   };
 
-  const handleAsk = async () => {
-    if (!question.trim()) {
-      setAskError('Enter a corpus question.');
-      return;
-    }
-
+  const buildMetadataFilter = () => {
     const metadataFilter: Record<string, any> = {};
     if (sourceFilter.trim()) {
       metadataFilter.source = sourceFilter.trim();
@@ -197,11 +201,20 @@ export default function RagWorkspace({
         metadataFilter.year = { '$gte': parsed };
       }
     }
+    return metadataFilter;
+  };
+
+  const handleAsk = async () => {
+    if (!question.trim()) {
+      setAskError('Enter a corpus question.');
+      return;
+    }
+    const metadataFilter = buildMetadataFilter();
 
     setLoadingAsk(true);
     setAskError(null);
     try {
-      const payload: Record<string, unknown> = {
+      const payload: RagAskRequest = {
         action: 'ask',
         question: question.trim(),
         task,
@@ -221,6 +234,65 @@ export default function RagWorkspace({
       setAskError(err instanceof Error ? err.message : 'Failed to query corpus');
     } finally {
       setLoadingAsk(false);
+    }
+  };
+
+  const handleInsights = async () => {
+    if (!question.trim()) {
+      setInsightsError('Enter a question or field/topic prompt for insights.');
+      return;
+    }
+    const metadataFilter = buildMetadataFilter();
+    setLoadingInsights(true);
+    setInsightsError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        action: 'insights',
+        question: question.trim(),
+        citationStyle,
+        topK,
+        namespace: resolvedNamespace,
+        returnContexts,
+      };
+      if (Object.keys(metadataFilter).length > 0) {
+        payload.metadataFilter = metadataFilter;
+      }
+      const result = await postRag<RagInsightsResponse>(payload);
+      setInsightsResult(result);
+      onToast?.('Cross-paper insights generated');
+    } catch (err) {
+      setInsightsError(err instanceof Error ? err.message : 'Failed to generate insights');
+    } finally {
+      setLoadingInsights(false);
+    }
+  };
+
+  const handleGaps = async () => {
+    if (!question.trim()) {
+      setGapsError('Enter a question to detect research gaps.');
+      return;
+    }
+    const metadataFilter = buildMetadataFilter();
+    setLoadingGaps(true);
+    setGapsError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        action: 'gaps',
+        question: question.trim(),
+        citationStyle,
+        topK,
+        namespace: resolvedNamespace,
+      };
+      if (Object.keys(metadataFilter).length > 0) {
+        payload.metadataFilter = metadataFilter;
+      }
+      const result = await postRag<RagGapsResponse>(payload);
+      setGapsResult(result);
+      onToast?.('Research gaps detected');
+    } catch (err) {
+      setGapsError(err instanceof Error ? err.message : 'Failed to detect research gaps');
+    } finally {
+      setLoadingGaps(false);
     }
   };
 
@@ -520,17 +592,43 @@ export default function RagWorkspace({
                 </label>
               </div>
 
-              <button
-                onClick={handleAsk}
-                disabled={loadingAsk}
-                className="w-full sm:w-auto px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-accent-600 to-accent-700 text-white hover:from-accent-500 hover:to-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-              >
-                {loadingAsk ? 'Generating…' : 'Run RAG Query'}
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={handleAsk}
+                  disabled={loadingAsk}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-accent-600 to-accent-700 text-white hover:from-accent-500 hover:to-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {loadingAsk ? 'Generating…' : 'Run RAG Query'}
+                </button>
+                <button
+                  onClick={handleInsights}
+                  disabled={loadingInsights}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-primary-600 to-primary-700 text-white hover:from-primary-500 hover:to-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {loadingInsights ? 'Mapping…' : 'Field Map'}
+                </button>
+                <button
+                  onClick={handleGaps}
+                  disabled={loadingGaps}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-amber-600 to-amber-700 text-white hover:from-amber-500 hover:to-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {loadingGaps ? 'Detecting…' : 'Detect Gaps'}
+                </button>
+              </div>
 
               {askError && (
                 <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/15 text-sm text-red-400">
                   {askError}
+                </div>
+              )}
+              {insightsError && (
+                <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/15 text-sm text-red-400">
+                  {insightsError}
+                </div>
+              )}
+              {gapsError && (
+                <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/15 text-sm text-red-400">
+                  {gapsError}
                 </div>
               )}
 
@@ -621,6 +719,93 @@ export default function RagWorkspace({
                         ))}
                       </div>
                     </details>
+                  )}
+                </div>
+              )}
+
+              {insightsResult && (
+                <div className="space-y-3 pt-2 border-t border-slate-800/70">
+                  <p className="text-xs text-slate-600">
+                    Insights: {insightsResult.retrieval.returned} chunks · topK {insightsResult.retrieval.topK} · {insightsResult.retrieval.namespace}
+                    {insightsResult.retrieval.mode ? ` · ${insightsResult.retrieval.mode}` : ''}
+                  </p>
+                  {insightsResult.insights.agreementClusters.length > 0 && (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-2">Agreement Clusters</h5>
+                      <ul className="space-y-1">
+                        {insightsResult.insights.agreementClusters.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {insightsResult.insights.contradictions.length > 0 && (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-amber-400 mb-2">Contradictions</h5>
+                      <ul className="space-y-1">
+                        {insightsResult.insights.contradictions.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {insightsResult.insights.methodologicalDifferences.length > 0 && (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-2">Methodological Differences</h5>
+                      <ul className="space-y-1">
+                        {insightsResult.insights.methodologicalDifferences.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {insightsResult.insights.timelineEvolution.length > 0 && (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-2">Timeline Evolution</h5>
+                      <ul className="space-y-1">
+                        {insightsResult.insights.timelineEvolution.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {insightsResult.insights.researchGaps.length > 0 && (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-amber-400 mb-2">Research Gaps</h5>
+                      <ul className="space-y-1">
+                        {insightsResult.insights.researchGaps.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {gapsResult && (
+                <div className="space-y-3 pt-2 border-t border-slate-800/70">
+                  <p className="text-xs text-slate-600">
+                    Gaps: {gapsResult.retrieval.returned} chunks · topK {gapsResult.retrieval.topK} · {gapsResult.retrieval.namespace}
+                  </p>
+                  {gapsResult.gaps.length > 0 && (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-amber-400 mb-2">Detected Gaps</h5>
+                      <ul className="space-y-1">
+                        {gapsResult.gaps.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {gapsResult.supportingEvidence.length > 0 && (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-2">Supporting Evidence</h5>
+                      <ul className="space-y-1">
+                        {gapsResult.supportingEvidence.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </div>
               )}
