@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import SearchBar from '@/components/SearchBar';
 import PaperCard from '@/components/PaperCard';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import RagWorkspace from '@/components/RagWorkspace';
 import { Paper } from '@/types/paper';
 
 // --- localStorage helpers ---
@@ -26,6 +27,15 @@ function pushHistory(query: string) {
   const history = loadHistory().filter(q => q !== query);
   history.unshift(query);
   localStorage.setItem('searchHistory', JSON.stringify(history.slice(0, 12)));
+}
+function loadCorpusQueue(): Paper[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    return JSON.parse(localStorage.getItem('corpusQueuePapers') || '[]');
+  } catch { return []; }
+}
+function saveCorpusQueue(papers: Paper[]) {
+  localStorage.setItem('corpusQueuePapers', JSON.stringify(papers));
 }
 
 export default function Home() {
@@ -58,12 +68,14 @@ export default function Home() {
   const [bookmarks, setBookmarks] = useState<Paper[]>([]);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [showBookmarks, setShowBookmarks] = useState(false);
+  const [corpusQueue, setCorpusQueue] = useState<Paper[]>([]);
   const [toast, setToast] = useState<string | null>(null);
 
   // Load bookmarks & history from localStorage on mount
   useEffect(() => {
     setBookmarks(loadBookmarks());
     setSearchHistory(loadHistory());
+    setCorpusQueue(loadCorpusQueue());
   }, []);
 
   // Toast auto-dismiss
@@ -95,6 +107,32 @@ export default function Home() {
   const isBookmarked = useCallback((paper: Paper) => {
     return bookmarks.some(p => (p.paperId && p.paperId === paper.paperId) || p.title === paper.title);
   }, [bookmarks]);
+
+  const toggleCorpusQueue = useCallback((paper: Paper) => {
+    setCorpusQueue(prev => {
+      const exists = prev.some(p => (p.paperId && p.paperId === paper.paperId) || p.title === paper.title);
+      let next: Paper[];
+      if (exists) {
+        next = prev.filter(p => !((p.paperId && p.paperId === paper.paperId) || p.title === paper.title));
+        showToast('Removed from corpus queue');
+      } else {
+        next = [...prev, paper];
+        showToast('Added to corpus queue');
+      }
+      saveCorpusQueue(next);
+      return next;
+    });
+  }, []);
+
+  const isInCorpusQueue = useCallback((paper: Paper) => {
+    return corpusQueue.some(p => (p.paperId && p.paperId === paper.paperId) || p.title === paper.title);
+  }, [corpusQueue]);
+
+  const clearCorpusQueue = useCallback(() => {
+    setCorpusQueue([]);
+    saveCorpusQueue([]);
+    showToast('Cleared corpus queue');
+  }, []);
 
   const exportBookmarksBibtex = () => {
     if (bookmarks.length === 0) { showToast('No papers saved'); return; }
@@ -228,6 +266,14 @@ export default function Home() {
         <div className="animate-fade-in-up">
           <SearchBar onSearch={handleSearch} loading={loading} />
         </div>
+
+        <RagWorkspace
+          papers={papers}
+          bookmarks={bookmarks}
+          queuedPapers={corpusQueue}
+          onClearQueuedPapers={clearCorpusQueue}
+          onToast={showToast}
+        />
 
         {/* Search History */}
         {searchHistory.length > 0 && !searchInfo && !loading && (
@@ -578,6 +624,8 @@ export default function Home() {
                   paper={paper}
                   isBookmarked={isBookmarked(paper)}
                   onToggleBookmark={() => toggleBookmark(paper)}
+                  isInCorpusQueue={isInCorpusQueue(paper)}
+                  onToggleCorpusQueue={() => toggleCorpusQueue(paper)}
                 />
               </div>
             ))}
@@ -611,6 +659,8 @@ export default function Home() {
             <span className="px-2 py-0.5 rounded bg-surface-800/60 border border-slate-800/50 font-medium text-slate-600">OpenAlex</span>
             <span className="px-2 py-0.5 rounded bg-surface-800/60 border border-slate-800/50 font-medium text-slate-600">Semantic Scholar</span>
             <span className="px-2 py-0.5 rounded bg-surface-800/60 border border-slate-800/50 font-medium text-slate-600">arXiv</span>
+            <span className="px-2 py-0.5 rounded bg-surface-800/60 border border-slate-800/50 font-medium text-slate-600">Crossref</span>
+            <span className="px-2 py-0.5 rounded bg-surface-800/60 border border-slate-800/50 font-medium text-slate-600">Pinecone</span>
           </div>
         </div>
       </footer>

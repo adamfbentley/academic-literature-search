@@ -7,6 +7,8 @@ interface PaperCardProps {
   paper: Paper;
   isBookmarked?: boolean;
   onToggleBookmark?: () => void;
+  isInCorpusQueue?: boolean;
+  onToggleCorpusQueue?: () => void;
 }
 
 interface Summary {
@@ -16,7 +18,13 @@ interface Summary {
   limitations: string;
 }
 
-export default function PaperCard({ paper, isBookmarked, onToggleBookmark }: PaperCardProps) {
+export default function PaperCard({
+  paper,
+  isBookmarked,
+  onToggleBookmark,
+  isInCorpusQueue,
+  onToggleCorpusQueue,
+}: PaperCardProps) {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
@@ -199,6 +207,17 @@ export default function PaperCard({ paper, isBookmarked, onToggleBookmark }: Pap
           >
             <svg className="w-4 h-4" fill={isBookmarked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" /></svg>
             {isBookmarked ? 'Saved' : 'Save'}
+          </button>
+        )}
+
+        {onToggleCorpusQueue && (
+          <button
+            onClick={onToggleCorpusQueue}
+            className={`inline-flex items-center gap-1.5 text-sm font-medium transition-colors ${isInCorpusQueue ? 'text-accent-300 hover:text-accent-200' : 'text-slate-500 hover:text-slate-300'}`}
+            title={isInCorpusQueue ? 'Remove from corpus queue' : 'Add to corpus queue'}
+          >
+            <svg className="w-4 h-4" fill={isInCorpusQueue ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14-7H5a2 2 0 00-2 2v12a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2z" /></svg>
+            {isInCorpusQueue ? 'Queued' : 'To Corpus'}
           </button>
         )}
         

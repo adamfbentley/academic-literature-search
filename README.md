@@ -23,6 +23,13 @@ Modern academic literature search platform that combines three major research da
 - 📄 **Deep Overview (1-page):** On-demand synthesis of up to 20 papers, including claims, disagreements, evidence types, reading order recommendations
 - 💡 **OpenAI integration:** GPT-4o-mini with JSON mode; robust fallbacks if API fails
 
+### RAG Pipeline (New)
+- 🧱 **Paper ingestion pipeline:** Accepts direct papers or query-driven discovery from OpenAlex/Semantic Scholar/Crossref
+- 🧩 **Chunking + embeddings:** Splits abstract/full text/PDF text into chunks and embeds via OpenAI embeddings
+- 🗄️ **Vector database:** Pinecone-backed chunk storage and nearest-neighbor retrieval
+- 🧠 **Grounded synthesis:** LLM synthesis using retrieved chunks only, with inline citation tags like `[1]`
+- 🧾 **Citation formatter:** Automatic APA/MLA/IEEE reference formatting in responses
+
 ### UI/UX
 - 🎨 **Modern interface:** Next.js 14 + Tailwind CSS, dark mode support
 - 📱 **Responsive design:** Mobile-first, fully responsive across devices
@@ -48,6 +55,7 @@ Modern academic literature search platform that combines three major research da
   - Semantic Scholar Graph API (citations + enrichment)
   - arXiv API (opt-in preprints)
 - **Summarize Lambda:** GPT-powered paper summarization with 30-day cache
+- **RAG Pipeline Lambda:** Ingestion + retrieval + source-grounded QA/synthesis with citations
 - **API Gateway:** REST API with CORS, Lambda proxy integration
 - **Database:** DynamoDB (search cache, overview cache, paper summaries)
 - **Deployment:** Manual zip upload to Lambda (future: SAM/CDK automation)
@@ -56,9 +64,10 @@ Modern academic literature search platform that combines three major research da
 ```
 User → AWS Amplify (static site) 
      → API Gateway 
-     → Lambda (search_papers/summarize_paper)
+     → Lambda (search_papers/summarize_paper/rag_pipeline)
      → DynamoDB (cache)
-     → External APIs (OpenAlex/Semantic Scholar/arXiv/OpenAI)
+     → Pinecone (RAG vector index)
+     → External APIs (OpenAlex/Semantic Scholar/arXiv/Crossref/OpenAI)
 ```
 
 ## Tech Stack
@@ -70,7 +79,7 @@ User → AWS Amplify (static site)
 **Backend:**
 - Python 3.12, AWS Lambda, API Gateway (REST)
 - DynamoDB (caching), Requests (HTTP client)
-- OpenAI API (GPT-4o-mini), OpenAlex/Semantic Scholar/arXiv APIs
+- OpenAI API (chat + embeddings), Pinecone, OpenAlex/Semantic Scholar/arXiv/Crossref APIs
 
 **DevOps:**
 - AWS Amplify (CI/CD + hosting), Git/GitHub
@@ -96,7 +105,11 @@ User → AWS Amplify (static site)
 │   │   │   └── lambda_function_multisource.py  # Multi-source search + AI overview
 │   │   └── summarize_paper/
 │   │       └── lambda_function.py              # Per-paper AI summarization
+│   │   └── rag_pipeline/
+│   │       ├── lambda_function.py              # Ingestion + RAG QA + citation formatting
+│   │       └── requirements.txt
 │   └── deploy.ps1                # Lambda packaging script
+│   └── deploy-rag.ps1            # RAG Lambda packaging script
 ├── amplify.yml                   # AWS Amplify build config
 ├── package.json                  # Node.js dependencies
 └── tsconfig.json                 # TypeScript config
@@ -156,6 +169,39 @@ User → AWS Amplify (static site)
    - `OPENAI_MODEL` — model name (default: `gpt-4o-mini`)
    - `OPENALEX_MAILTO` — contact email for polite OpenAlex API usage
    - `SEMANTIC_SCHOLAR_API_KEY` — optional; raises S2 rate limits
+
+### RAG Lambda Deployment (`rag_pipeline`)
+
+1. **Package Lambda function:**
+   ```bash
+   cd backend/lambda/rag_pipeline
+   zip -r function.zip lambda_function.py
+   ```
+   Or run:
+   ```powershell
+   ./backend/deploy-rag.ps1
+   ```
+
+2. **Upload to AWS Lambda:**
+   ```bash
+   aws lambda update-function-code \
+     --function-name rag-pipeline \
+     --zip-file fileb://function.zip
+   ```
+
+3. **Environment variables** (required for RAG):
+   - `OPENAI_API_KEY`
+   - `OPENAI_EMBED_MODEL` (default: `text-embedding-3-small`)
+   - `OPENAI_CHAT_MODEL` (default: `gpt-4o-mini`)
+   - `PINECONE_API_KEY`
+   - `PINECONE_INDEX_HOST` (host for your Pinecone index)
+   - `PINECONE_NAMESPACE` (default namespace, optional)
+
+4. **Optional RAG env vars:**
+   - `MAX_PDF_TEXT_CHARS` (default: `120000`)
+   - `RAG_MAX_CONTEXT_CHARS` (default: `16000`)
+   - `OPENALEX_MAILTO` (for discovery mode)
+   - `SEMANTIC_SCHOLAR_API_KEY` (for higher S2 limits)
 
 4. **API Gateway:**
    - Create REST API with Lambda proxy integration
@@ -239,6 +285,55 @@ POST /search
   "deepOverviewMaxPapers": 10,
   "forceRefresh": false,
   "debug": false
+}
+```
+
+### RAG Endpoint
+```
+POST /rag
+```
+
+`/rag` supports `action: "ingest"` and `action: "ask"`.
+
+**Ingest request:**
+```json
+{
+  "action": "ingest",
+  "query": "retrieval-augmented generation",
+  "limit": 15,
+  "sources": ["openalex", "semantic_scholar", "crossref"],
+  "namespace": "ml-corpus",
+  "extractPdfText": true,
+  "chunkSizeWords": 220,
+  "chunkOverlapWords": 40
+}
+```
+
+**Ask request:**
+```json
+{
+  "action": "ask",
+  "question": "What are current best practices for RAG evaluation?",
+  "task": "synthesis",
+  "topK": 8,
+  "namespace": "ml-corpus",
+  "citationStyle": "apa",
+  "returnContexts": false
+}
+```
+
+**Ask response shape (truncated):**
+```json
+{
+  "answer": ".... [1] ... [3]",
+  "crossPaperSynthesis": ["..."],
+  "limitations": ["..."],
+  "references": [
+    {
+      "citationNumber": 1,
+      "formatted": "Author, A. (2024). Title..."
+    }
+  ]
 }
 ```
 

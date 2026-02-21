@@ -1,0 +1,1073 @@
+import hashlib
+import json
+import os
+import re
+from io import BytesIO
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import requests
+
+try:
+    from pypdf import PdfReader  # type: ignore
+except Exception:
+    PdfReader = None
+
+
+DEFAULT_USER_AGENT = os.environ.get("HTTP_USER_AGENT", "academic-literature-ai-rag/1.0")
+OPENAI_EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+MAX_PDF_TEXT_CHARS = int(os.environ.get("MAX_PDF_TEXT_CHARS", "120000"))
+MAX_CONTEXT_CHARS = int(os.environ.get("RAG_MAX_CONTEXT_CHARS", "16000"))
+
+
+def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
+    body = event.get("body", {})
+    if isinstance(body, str):
+        body = body.strip()
+        if not body:
+            return {}
+        try:
+            return json.loads(body)
+        except Exception:
+            return {}
+    if isinstance(body, dict):
+        return body
+    if isinstance(event, dict):
+        return event
+    return {}
+
+
+def create_response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization",
+            "Access-Control-Allow-Methods": "POST,OPTIONS",
+        },
+        "body": json.dumps(body),
+    }
+
+
+def clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return max(min_value, min(max_value, parsed))
+
+
+def as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "y", "on"}:
+            return True
+        if v in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
+def clean_text(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\x00", "", text)
+    return text
+
+
+def normalize_authors(raw_authors: Any) -> List[str]:
+    if raw_authors is None:
+        return []
+    if isinstance(raw_authors, list):
+        out: List[str] = []
+        for item in raw_authors:
+            if isinstance(item, str):
+                name = clean_text(item)
+                if name:
+                    out.append(name)
+            elif isinstance(item, dict):
+                name = clean_text(str(item.get("name") or item.get("display_name") or ""))
+                if name:
+                    out.append(name)
+        return out
+    if isinstance(raw_authors, str):
+        parts = [clean_text(x) for x in re.split(r";|, and | and ", raw_authors) if clean_text(x)]
+        return parts
+    return []
+
+
+def normalize_paper(raw: Dict[str, Any]) -> Dict[str, Any]:
+    title = clean_text(str(raw.get("title") or ""))
+    doi = clean_text(str(raw.get("doi") or "")).lower()
+    if doi.startswith("https://doi.org/"):
+        doi = doi.replace("https://doi.org/", "", 1)
+    paper_id = clean_text(str(raw.get("paperId") or raw.get("id") or ""))
+    if not paper_id:
+        hash_seed = f"{title}|{doi}|{raw.get('year') or ''}"
+        paper_id = "paper_" + hashlib.sha1(hash_seed.encode("utf-8")).hexdigest()[:16]
+
+    return {
+        "paperId": paper_id,
+        "title": title,
+        "abstract": clean_text(str(raw.get("abstract") or "")),
+        "fullText": clean_text(str(raw.get("fullText") or "")),
+        "authors": normalize_authors(raw.get("authors")),
+        "year": raw.get("year"),
+        "citationCount": int(raw.get("citationCount", 0) or 0),
+        "publicationDate": clean_text(str(raw.get("publicationDate") or "")),
+        "venue": clean_text(str(raw.get("venue") or "")),
+        "url": clean_text(str(raw.get("url") or "")),
+        "pdfUrl": clean_text(str(raw.get("pdfUrl") or "")),
+        "doi": doi,
+        "source": clean_text(str(raw.get("source") or "")) or "custom",
+    }
+
+
+def _normalize_pinecone_host(host: str) -> str:
+    host = (host or "").strip()
+    if not host:
+        raise ValueError("Missing PINECONE_INDEX_HOST")
+    if not host.startswith("http://") and not host.startswith("https://"):
+        host = "https://" + host
+    return host.rstrip("/")
+
+
+def _pinecone_headers() -> Dict[str, str]:
+    api_key = os.environ.get("PINECONE_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Missing PINECONE_API_KEY")
+    return {
+        "Api-Key": api_key,
+        "Content-Type": "application/json",
+        "User-Agent": DEFAULT_USER_AGENT,
+    }
+
+
+def pinecone_upsert(vectors: List[Dict[str, Any]], namespace: Optional[str]) -> None:
+    if not vectors:
+        return
+    host = _normalize_pinecone_host(os.environ.get("PINECONE_INDEX_HOST", ""))
+    payload: Dict[str, Any] = {"vectors": vectors}
+    if namespace:
+        payload["namespace"] = namespace
+
+    response = requests.post(
+        f"{host}/vectors/upsert",
+        headers=_pinecone_headers(),
+        json=payload,
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Pinecone upsert failed ({response.status_code}): {response.text[:400]}")
+
+
+def pinecone_query(
+    query_vector: List[float],
+    top_k: int,
+    namespace: Optional[str],
+    metadata_filter: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    host = _normalize_pinecone_host(os.environ.get("PINECONE_INDEX_HOST", ""))
+    payload: Dict[str, Any] = {
+        "vector": query_vector,
+        "topK": top_k,
+        "includeMetadata": True,
+    }
+    if namespace:
+        payload["namespace"] = namespace
+    if metadata_filter:
+        payload["filter"] = metadata_filter
+
+    response = requests.post(
+        f"{host}/query",
+        headers=_pinecone_headers(),
+        json=payload,
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Pinecone query failed ({response.status_code}): {response.text[:400]}")
+
+    data = response.json() or {}
+    return data.get("matches", []) or []
+
+def _openai_headers() -> Dict[str, str]:
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError("Missing OPENAI_API_KEY")
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": DEFAULT_USER_AGENT,
+    }
+
+
+def openai_embed_texts(texts: List[str], model: str) -> List[List[float]]:
+    if not texts:
+        return []
+    headers = _openai_headers()
+    all_vectors: List[List[float]] = []
+    batch_size = 64
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        payload = {"model": model, "input": batch}
+        response = requests.post(
+            "https://api.openai.com/v1/embeddings",
+            headers=headers,
+            json=payload,
+            timeout=45,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"OpenAI embeddings failed ({response.status_code}): {response.text[:400]}")
+        data = response.json() or {}
+        rows = data.get("data", []) or []
+        rows = sorted(rows, key=lambda x: int(x.get("index", 0)))
+        all_vectors.extend([r.get("embedding") for r in rows if r.get("embedding")])
+    return all_vectors
+
+
+def openai_chat_json(
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+) -> Dict[str, Any]:
+    headers = _openai_headers()
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        payload.pop("response_format", None)
+        retry = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        if retry.status_code >= 400:
+            raise RuntimeError(f"OpenAI chat failed ({retry.status_code}): {retry.text[:500]}")
+        response = retry
+
+    data = response.json() or {}
+    content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    if not content:
+        raise RuntimeError("OpenAI chat returned empty content")
+    try:
+        return json.loads(content)
+    except Exception:
+        m = re.search(r"\{[\s\S]*\}", content)
+        if not m:
+            raise RuntimeError("OpenAI chat did not return valid JSON")
+        return json.loads(m.group(0))
+
+
+def discover_openalex(query: str, limit: int) -> List[Dict[str, Any]]:
+    response = requests.get(
+        "https://api.openalex.org/works",
+        params={
+            "search": query,
+            "per_page": limit,
+            "sort": "relevance_score:desc",
+            "mailto": os.environ.get("OPENALEX_MAILTO", "your-email@example.com"),
+        },
+        headers={"User-Agent": DEFAULT_USER_AGENT},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json() or {}
+    out: List[Dict[str, Any]] = []
+    for work in data.get("results", []) or []:
+        authors: List[str] = []
+        for authorship in work.get("authorships", [])[:8]:
+            author = (authorship or {}).get("author") or {}
+            display_name = clean_text(str(author.get("display_name") or ""))
+            if display_name:
+                authors.append(display_name)
+
+        abstract_text = ""
+        abstract_inverted = work.get("abstract_inverted_index")
+        if isinstance(abstract_inverted, dict):
+            try:
+                positions: List[Tuple[int, str]] = []
+                for token, token_positions in abstract_inverted.items():
+                    for pos in token_positions:
+                        positions.append((int(pos), str(token)))
+                positions.sort(key=lambda item: item[0])
+                abstract_text = " ".join(x[1] for x in positions)
+            except Exception:
+                abstract_text = ""
+
+        open_access = work.get("open_access") or {}
+        source_obj = ((work.get("primary_location") or {}).get("source") or {})
+        out.append(
+            {
+                "paperId": clean_text(str(work.get("id") or "")).split("/")[-1],
+                "title": clean_text(str(work.get("title") or "")),
+                "abstract": clean_text(abstract_text),
+                "authors": authors,
+                "year": work.get("publication_year"),
+                "citationCount": int(work.get("cited_by_count", 0) or 0),
+                "publicationDate": clean_text(str(work.get("publication_date") or "")),
+                "venue": clean_text(str(source_obj.get("display_name") or "")),
+                "url": clean_text(str(work.get("id") or "")),
+                "pdfUrl": clean_text(str(open_access.get("oa_url") or "")),
+                "doi": clean_text(str(work.get("doi") or "")).replace("https://doi.org/", ""),
+                "source": "OpenAlex",
+            }
+        )
+    return out
+
+
+def discover_semantic_scholar(query: str, limit: int) -> List[Dict[str, Any]]:
+    headers = {"Accept": "application/json", "User-Agent": DEFAULT_USER_AGENT}
+    api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    response = requests.get(
+        "https://api.semanticscholar.org/graph/v1/paper/search",
+        params={
+            "query": query,
+            "limit": limit,
+            "fields": "paperId,title,abstract,authors,year,citationCount,publicationDate,venue,url,externalIds,openAccessPdf",
+        },
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json() or {}
+    out: List[Dict[str, Any]] = []
+    for paper in data.get("data", []) or []:
+        ext = paper.get("externalIds") or {}
+        out.append(
+            {
+                "paperId": clean_text(str(paper.get("paperId") or "")),
+                "title": clean_text(str(paper.get("title") or "")),
+                "abstract": clean_text(str(paper.get("abstract") or "")),
+                "authors": [clean_text(str(a.get("name") or "")) for a in (paper.get("authors") or []) if a.get("name")],
+                "year": paper.get("year"),
+                "citationCount": int(paper.get("citationCount", 0) or 0),
+                "publicationDate": clean_text(str(paper.get("publicationDate") or "")),
+                "venue": clean_text(str(paper.get("venue") or "")),
+                "url": clean_text(str(paper.get("url") or "")),
+                "pdfUrl": clean_text(str((paper.get("openAccessPdf") or {}).get("url") or "")),
+                "doi": clean_text(str(ext.get("DOI") or "")).lower(),
+                "source": "Semantic Scholar",
+            }
+        )
+    return out
+
+
+def discover_crossref(query: str, limit: int) -> List[Dict[str, Any]]:
+    response = requests.get(
+        "https://api.crossref.org/works",
+        params={
+            "query.bibliographic": query,
+            "rows": limit,
+            "sort": "relevance",
+            "order": "desc",
+            "select": "DOI,title,author,issued,container-title,URL,is-referenced-by-count",
+        },
+        headers={"User-Agent": DEFAULT_USER_AGENT},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json() or {}
+    out: List[Dict[str, Any]] = []
+    for item in (((data.get("message") or {}).get("items")) or []):
+        title_list = item.get("title") or []
+        container_titles = item.get("container-title") or []
+        year = None
+        issued = item.get("issued") or {}
+        date_parts = issued.get("date-parts") or []
+        if date_parts and isinstance(date_parts, list) and date_parts[0]:
+            year = date_parts[0][0]
+        authors: List[str] = []
+        for a in item.get("author", []) or []:
+            family = clean_text(str(a.get("family") or ""))
+            given = clean_text(str(a.get("given") or ""))
+            name = clean_text(f"{given} {family}")
+            if name:
+                authors.append(name)
+        doi = clean_text(str(item.get("DOI") or "")).lower()
+        out.append(
+            {
+                "paperId": doi.replace("/", "_") if doi else "",
+                "title": clean_text(str(title_list[0] if title_list else "")),
+                "abstract": "",
+                "authors": authors,
+                "year": year,
+                "citationCount": int(item.get("is-referenced-by-count", 0) or 0),
+                "publicationDate": "",
+                "venue": clean_text(str(container_titles[0] if container_titles else "")),
+                "url": clean_text(str(item.get("URL") or "")),
+                "pdfUrl": "",
+                "doi": doi,
+                "source": "Crossref",
+            }
+        )
+    return out
+
+def merge_papers(papers: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def key_for(p: Dict[str, Any]) -> str:
+        doi = clean_text(str(p.get("doi") or "")).lower()
+        if doi:
+            return f"doi:{doi}"
+        title = clean_text(str(p.get("title") or "")).lower()
+        title = re.sub(r"[^a-z0-9 ]", "", title)
+        title = " ".join(title.split())
+        if title:
+            return f"title:{title}"
+        return f"id:{p.get('paperId') or hashlib.sha1(json.dumps(p, sort_keys=True).encode()).hexdigest()[:10]}"
+
+    def score(p: Dict[str, Any]) -> Tuple[int, int, int]:
+        has_abstract = 1 if p.get("abstract") else 0
+        has_pdf = 1 if p.get("pdfUrl") else 0
+        citations = int(p.get("citationCount", 0) or 0)
+        return (has_abstract, has_pdf, citations)
+
+    selected: Dict[str, Dict[str, Any]] = {}
+    for raw in papers:
+        p = normalize_paper(raw)
+        k = key_for(p)
+        existing = selected.get(k)
+        if not existing:
+            selected[k] = p
+            continue
+        if score(p) > score(existing):
+            merged = {**existing, **p}
+            if existing.get("authors") and p.get("authors"):
+                merged["authors"] = existing["authors"] if len(existing["authors"]) >= len(p["authors"]) else p["authors"]
+            selected[k] = merged
+        else:
+            for field in ("abstract", "pdfUrl", "doi", "url", "venue"):
+                if not existing.get(field) and p.get(field):
+                    existing[field] = p[field]
+            if len(existing.get("authors", [])) < len(p.get("authors", [])):
+                existing["authors"] = p.get("authors", [])
+
+    return list(selected.values())
+
+
+def extract_pdf_text(pdf_url: str, max_chars: int) -> str:
+    if not pdf_url:
+        return ""
+    if PdfReader is None:
+        return ""
+
+    response = requests.get(
+        pdf_url,
+        headers={"User-Agent": DEFAULT_USER_AGENT},
+        timeout=45,
+    )
+    response.raise_for_status()
+
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "pdf" not in content_type and not pdf_url.lower().endswith(".pdf"):
+        return ""
+
+    data = response.content
+    if not data:
+        return ""
+
+    reader = PdfReader(BytesIO(data))
+    text_parts: List[str] = []
+    for page in reader.pages:
+        page_text = clean_text(page.extract_text() or "")
+        if page_text:
+            text_parts.append(page_text)
+        if sum(len(x) for x in text_parts) >= max_chars:
+            break
+    joined = "\n".join(text_parts)
+    return joined[:max_chars]
+
+
+def chunk_text(text: str, chunk_size_words: int, overlap_words: int, min_words: int) -> List[str]:
+    text = clean_text(text)
+    if not text:
+        return []
+    words = text.split(" ")
+    if len(words) <= chunk_size_words:
+        return [text]
+
+    chunks: List[str] = []
+    step = max(1, chunk_size_words - overlap_words)
+    for start in range(0, len(words), step):
+        end = start + chunk_size_words
+        chunk_words = words[start:end]
+        if len(chunk_words) < min_words:
+            break
+        chunk = " ".join(chunk_words).strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(words):
+            break
+    return chunks
+
+
+def _paper_key(meta: Dict[str, Any]) -> str:
+    paper_id = clean_text(str(meta.get("paperId") or ""))
+    if paper_id:
+        return f"id:{paper_id}"
+    doi = clean_text(str(meta.get("doi") or "")).lower()
+    if doi:
+        return f"doi:{doi}"
+    title = clean_text(str(meta.get("title") or "")).lower()
+    return f"title:{title}"
+
+
+def _short_name_tokens(full_name: str) -> Tuple[str, str]:
+    tokens = [x for x in re.split(r"\s+", clean_text(full_name)) if x]
+    if not tokens:
+        return ("", "")
+    if len(tokens) == 1:
+        return (tokens[0], "")
+    return (tokens[-1], " ".join(tokens[:-1]))
+
+
+def _coerce_author_list(raw_authors: Any) -> List[str]:
+    if raw_authors is None:
+        return []
+    if isinstance(raw_authors, list):
+        return [clean_text(str(a)) for a in raw_authors if clean_text(str(a))]
+    if isinstance(raw_authors, str):
+        return [clean_text(x) for x in raw_authors.split(",") if clean_text(x)]
+    return []
+
+
+def _format_author_list(authors: Any, style: str) -> str:
+    author_list = _coerce_author_list(authors)
+    if not author_list:
+        return "Unknown author"
+    style = style.lower()
+    if style == "apa":
+        parts: List[str] = []
+        max_authors = min(7, len(author_list))
+        for full_name in author_list[:max_authors]:
+            last, given = _short_name_tokens(full_name)
+            initials = " ".join([f"{g[0]}." for g in given.split() if g])
+            if last and initials:
+                parts.append(f"{last}, {initials}")
+            elif last:
+                parts.append(last)
+        if len(parts) == 1:
+            return parts[0]
+        if len(parts) > 1:
+            return ", ".join(parts[:-1]) + ", & " + parts[-1]
+        return "Unknown author"
+
+    if style == "mla":
+        if len(author_list) == 1:
+            last, given = _short_name_tokens(author_list[0])
+            return f"{last}, {given}" if given else last
+        last, given = _short_name_tokens(author_list[0])
+        first = f"{last}, {given}" if given else last
+        if len(author_list) > 2:
+            return f"{first}, et al."
+        second = author_list[1]
+        return f"{first}, and {second}"
+
+    ieee_parts: List[str] = []
+    for full_name in author_list[:6]:
+        last, given = _short_name_tokens(full_name)
+        initials = " ".join([f"{g[0]}." for g in given.split() if g])
+        if initials and last:
+            ieee_parts.append(f"{initials} {last}")
+        else:
+            ieee_parts.append(last or full_name)
+    if len(author_list) > 6:
+        ieee_parts.append("et al.")
+    return ", ".join([x for x in ieee_parts if x]) or "Unknown author"
+
+
+def _reference_link(meta: Dict[str, Any]) -> str:
+    doi = clean_text(str(meta.get("doi") or ""))
+    if doi:
+        return f"https://doi.org/{doi}"
+    return clean_text(str(meta.get("url") or "")) or ""
+
+
+def format_reference(meta: Dict[str, Any], citation_number: int, style: str) -> str:
+    style = (style or "apa").strip().lower()
+    authors = _format_author_list(meta.get("authors", []) or [], style)
+    title = clean_text(str(meta.get("title") or "Untitled"))
+    venue = clean_text(str(meta.get("venue") or ""))
+    year = str(meta.get("year") or "n.d.")
+    link = _reference_link(meta)
+
+    if style == "ieee":
+        line = f"[{citation_number}] {authors}, \"{title},\""
+        if venue:
+            line += f" {venue},"
+        line += f" {year}."
+        if link:
+            line += f" {link}"
+        return line
+
+    if style == "mla":
+        line = f"{authors}. \"{title}.\""
+        if venue:
+            line += f" {venue},"
+        line += f" {year}."
+        if link:
+            line += f" {link}"
+        return line
+
+    line = f"{authors} ({year}). {title}."
+    if venue:
+        line += f" {venue}."
+    if link:
+        line += f" {link}"
+    return line
+
+
+def build_references(matches: List[Dict[str, Any]], style: str) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    references: List[Dict[str, Any]] = []
+    paper_to_citation: Dict[str, int] = {}
+
+    for match in matches:
+        meta = match.get("metadata") or {}
+        key = _paper_key(meta)
+        if key in paper_to_citation:
+            continue
+        citation_number = len(references) + 1
+        paper_to_citation[key] = citation_number
+        references.append(
+            {
+                "citationNumber": citation_number,
+                "paperId": meta.get("paperId"),
+                "title": meta.get("title"),
+                "year": meta.get("year"),
+                "venue": meta.get("venue"),
+                "source": meta.get("source"),
+                "doi": meta.get("doi"),
+                "url": meta.get("url"),
+                "formatted": format_reference(meta, citation_number, style),
+            }
+        )
+
+    return references, paper_to_citation
+
+def build_context(matches: List[Dict[str, Any]], paper_to_citation: Dict[str, int]) -> Tuple[str, List[Dict[str, Any]]]:
+    used_chunks: List[Dict[str, Any]] = []
+    context_parts: List[str] = []
+    total_chars = 0
+
+    for idx, match in enumerate(matches, 1):
+        meta = match.get("metadata") or {}
+        chunk_text_value = clean_text(str(meta.get("chunkText") or ""))
+        if not chunk_text_value:
+            continue
+
+        key = _paper_key(meta)
+        citation_number = paper_to_citation.get(key)
+        citation_tag = f"[{citation_number}]" if citation_number else "[?]"
+        title = clean_text(str(meta.get("title") or "Untitled"))
+        year = str(meta.get("year") or "n.d.")
+        score = float(match.get("score", 0.0) or 0.0)
+
+        block = (
+            f"Chunk {idx} | Citation {citation_tag} | Title: {title} | Year: {year} | Score: {score:.4f}\n"
+            f"{chunk_text_value}\n"
+        )
+        if total_chars + len(block) > MAX_CONTEXT_CHARS:
+            break
+        context_parts.append(block)
+        total_chars += len(block)
+        used_chunks.append(
+            {
+                "rank": idx,
+                "citationNumber": citation_number,
+                "paperId": meta.get("paperId"),
+                "title": title,
+                "score": score,
+                "chunkIndex": meta.get("chunkIndex"),
+                "snippet": chunk_text_value[:400],
+            }
+        )
+
+    return "\n".join(context_parts), used_chunks
+
+
+def fallback_answer(question: str, used_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not used_chunks:
+        return {
+            "answer": "No relevant context was retrieved from the corpus.",
+            "cross_paper_synthesis": [],
+            "limitations": ["No retrieved chunks available."],
+            "next_questions": [],
+            "confidence": "low",
+        }
+    top = used_chunks[:3]
+    evidence = []
+    for item in top:
+        citation = f"[{item.get('citationNumber')}]" if item.get("citationNumber") else "[?]"
+        evidence.append(f"{citation} {item.get('title')}: {item.get('snippet')}")
+    return {
+        "answer": (
+            f"Retrieved {len(used_chunks)} relevant chunks for: '{question}'. "
+            f"OpenAI synthesis is unavailable, so this is an extractive answer."
+        ),
+        "cross_paper_synthesis": evidence,
+        "limitations": ["Generative synthesis disabled because OPENAI_API_KEY is not configured."],
+        "next_questions": [],
+        "confidence": "low",
+    }
+
+
+def synthesize_answer(
+    question: str,
+    task: str,
+    context_text: str,
+    references: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {
+            "error": "OPENAI_API_KEY is not set for synthesis",
+            "payload": None,
+        }
+
+    instruction_by_task = {
+        "qa": (
+            "Answer the user question with grounded, source-aware reasoning. "
+            "Use citation tags like [1], [2] inline for each factual claim."
+        ),
+        "synthesis": (
+            "Synthesize cross-paper consensus, disagreements, and evidence quality. "
+            "Use inline citations [n] and explicitly compare studies."
+        ),
+        "comparison": (
+            "Provide a paper-to-paper comparison across methods, datasets, assumptions, and outcomes. "
+            "Use inline citations [n]."
+        ),
+        "outline": (
+            "Generate a structured literature review outline with section headings and key points. "
+            "Attach inline citations [n] to each key point."
+        ),
+    }
+    task_instruction = instruction_by_task.get(task, instruction_by_task["qa"])
+
+    system_prompt = (
+        "You are a rigorous research assistant. "
+        "Only use supplied context, and never invent sources. "
+        "If evidence is weak or missing, state uncertainty."
+    )
+
+    refs_short = "\n".join(
+        [
+            f"[{r['citationNumber']}] {r.get('title')} ({r.get('year') or 'n.d.'})"
+            for r in references
+        ]
+    )
+
+    user_prompt = (
+        f"Task: {task}\n"
+        f"Question: {question}\n\n"
+        f"Instruction: {task_instruction}\n\n"
+        "Allowed citations:\n"
+        f"{refs_short}\n\n"
+        "Context chunks:\n"
+        f"{context_text}\n\n"
+        "Return valid JSON with:\n"
+        "{\n"
+        '  "answer": "Main answer with inline [n] citations.",\n'
+        '  "cross_paper_synthesis": ["cross-paper point 1", "cross-paper point 2"],\n'
+        '  "limitations": ["limitation 1", "limitation 2"],\n'
+        '  "next_questions": ["next query 1", "next query 2"],\n'
+        '  "confidence": "high|medium|low"\n'
+        "}\n"
+    )
+
+    payload = openai_chat_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=(os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+        max_tokens=1200,
+        temperature=0.2,
+    )
+    return {"error": None, "payload": payload}
+
+
+def discover_papers(query: str, limit: int, sources: List[str]) -> List[Dict[str, Any]]:
+    discovered: List[Dict[str, Any]] = []
+    wanted = {s.strip().lower() for s in sources if s}
+
+    if "openalex" in wanted:
+        try:
+            discovered.extend(discover_openalex(query, limit))
+        except Exception as e:
+            print(f"OpenAlex discovery error: {str(e)}")
+
+    if "semantic_scholar" in wanted or "semanticscholar" in wanted:
+        try:
+            discovered.extend(discover_semantic_scholar(query, limit))
+        except Exception as e:
+            print(f"Semantic Scholar discovery error: {str(e)}")
+
+    if "crossref" in wanted:
+        try:
+            discovered.extend(discover_crossref(query, limit))
+        except Exception as e:
+            print(f"Crossref discovery error: {str(e)}")
+
+    return merge_papers(discovered)
+
+
+def ingest_papers(
+    papers: List[Dict[str, Any]],
+    namespace: Optional[str],
+    extract_pdf: bool,
+    chunk_size_words: int,
+    overlap_words: int,
+    min_chunk_words: int,
+) -> Dict[str, Any]:
+    embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
+    ingested_papers = 0
+    ingested_chunks = 0
+    skipped: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+
+    for raw in papers:
+        paper = normalize_paper(raw)
+        try:
+            text_parts: List[str] = []
+            if paper.get("fullText"):
+                text_parts.append(paper["fullText"])
+            if paper.get("abstract"):
+                text_parts.append(paper["abstract"])
+
+            if extract_pdf and paper.get("pdfUrl"):
+                try:
+                    pdf_text = extract_pdf_text(paper["pdfUrl"], MAX_PDF_TEXT_CHARS)
+                    if pdf_text:
+                        text_parts.append(pdf_text)
+                except Exception as pdf_error:
+                    print(f"PDF extraction failed for {paper.get('paperId')}: {str(pdf_error)}")
+
+            merged_text = clean_text("\n\n".join([x for x in text_parts if x]))
+            if not merged_text:
+                skipped.append(
+                    {
+                        "paperId": paper.get("paperId"),
+                        "title": paper.get("title"),
+                        "reason": "No abstract/fullText/PDF text available",
+                    }
+                )
+                continue
+
+            chunks = chunk_text(merged_text, chunk_size_words, overlap_words, min_chunk_words)
+            if not chunks:
+                skipped.append(
+                    {
+                        "paperId": paper.get("paperId"),
+                        "title": paper.get("title"),
+                        "reason": "Text too short after chunking",
+                    }
+                )
+                continue
+
+            vectors = openai_embed_texts(chunks, embed_model)
+            if len(vectors) != len(chunks):
+                raise RuntimeError("Embedding count mismatch")
+
+            upsert_rows: List[Dict[str, Any]] = []
+            for idx, (chunk_value, embedding) in enumerate(zip(chunks, vectors)):
+                vector_id = f"{paper['paperId']}::chunk::{idx}"
+                metadata = {
+                    "paperId": paper.get("paperId"),
+                    "title": paper.get("title"),
+                    "authors": ", ".join(paper.get("authors", [])[:10]),
+                    "year": int(paper.get("year") or 0),
+                    "citationCount": int(paper.get("citationCount") or 0),
+                    "venue": paper.get("venue") or "",
+                    "doi": paper.get("doi") or "",
+                    "url": paper.get("url") or "",
+                    "pdfUrl": paper.get("pdfUrl") or "",
+                    "source": paper.get("source") or "",
+                    "chunkIndex": idx,
+                    "chunkText": chunk_value[:4000],
+                }
+                upsert_rows.append({"id": vector_id, "values": embedding, "metadata": metadata})
+
+            for i in range(0, len(upsert_rows), 100):
+                pinecone_upsert(upsert_rows[i : i + 100], namespace)
+
+            ingested_papers += 1
+            ingested_chunks += len(chunks)
+        except Exception as e:
+            failed.append(
+                {
+                    "paperId": paper.get("paperId"),
+                    "title": paper.get("title"),
+                    "error": str(e),
+                }
+            )
+
+    return {
+        "ingestedPapers": ingested_papers,
+        "ingestedChunks": ingested_chunks,
+        "skippedPapers": skipped,
+        "failedPapers": failed,
+    }
+
+
+def handle_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
+    namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
+    query = clean_text(str(body.get("query") or ""))
+    limit = clamp_int(body.get("limit"), 15, 1, 100)
+    extract_pdf = as_bool(body.get("extractPdfText"), True)
+    chunk_size_words = clamp_int(body.get("chunkSizeWords"), 220, 80, 800)
+    overlap_words = clamp_int(body.get("chunkOverlapWords"), 40, 0, 200)
+    min_chunk_words = clamp_int(body.get("minChunkWords"), 60, 20, 200)
+
+    explicit_papers = body.get("papers") if isinstance(body.get("papers"), list) else []
+    sources = body.get("sources") if isinstance(body.get("sources"), list) else ["openalex", "semantic_scholar", "crossref"]
+
+    discovered: List[Dict[str, Any]] = []
+    if query:
+        discovered = discover_papers(query, limit, sources)
+
+    all_candidates = merge_papers([*explicit_papers, *discovered])
+    if not all_candidates:
+        return {
+            "namespace": namespace,
+            "discoveredCount": 0,
+            "ingestedPapers": 0,
+            "ingestedChunks": 0,
+            "skippedPapers": [],
+            "failedPapers": [],
+            "message": "No papers to ingest. Provide papers[] or query.",
+        }
+
+    stats = ingest_papers(
+        papers=all_candidates,
+        namespace=namespace,
+        extract_pdf=extract_pdf,
+        chunk_size_words=chunk_size_words,
+        overlap_words=overlap_words,
+        min_chunk_words=min_chunk_words,
+    )
+    return {
+        "namespace": namespace,
+        "discoveredCount": len(discovered),
+        "candidateCount": len(all_candidates),
+        **stats,
+        "embeddingModel": (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip(),
+        "vectorProvider": "pinecone",
+    }
+
+
+def handle_ask(body: Dict[str, Any]) -> Dict[str, Any]:
+    question = clean_text(str(body.get("question") or ""))
+    if not question:
+        raise ValueError("question is required")
+
+    namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
+    task = clean_text(str(body.get("task") or "qa")).lower()
+    if task not in {"qa", "synthesis", "comparison", "outline"}:
+        task = "qa"
+    citation_style = clean_text(str(body.get("citationStyle") or "apa")).lower()
+    if citation_style not in {"apa", "mla", "ieee"}:
+        citation_style = "apa"
+    top_k = clamp_int(body.get("topK"), 8, 1, 30)
+    return_contexts = as_bool(body.get("returnContexts"), False)
+    metadata_filter = body.get("metadataFilter") if isinstance(body.get("metadataFilter"), dict) else None
+
+    embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
+    q_embeddings = openai_embed_texts([question], embed_model)
+    if not q_embeddings:
+        raise RuntimeError("Failed to embed question")
+
+    matches = pinecone_query(
+        query_vector=q_embeddings[0],
+        top_k=top_k,
+        namespace=namespace,
+        metadata_filter=metadata_filter,
+    )
+    if not matches:
+        return {
+            "question": question,
+            "task": task,
+            "answer": "No relevant documents were retrieved from the corpus.",
+            "references": [],
+            "retrieval": {"topK": top_k, "returned": 0, "namespace": namespace},
+            "crossPaperSynthesis": [],
+            "limitations": ["No context retrieved from vector database."],
+            "nextQuestions": [],
+            "confidence": "low",
+        }
+
+    references, paper_to_citation = build_references(matches, citation_style)
+    context_text, used_chunks = build_context(matches, paper_to_citation)
+
+    synthesis_result = synthesize_answer(question, task, context_text, references)
+    if synthesis_result.get("error"):
+        payload = fallback_answer(question, used_chunks)
+        payload["limitations"] = payload.get("limitations", []) + [synthesis_result["error"]]
+    else:
+        payload = synthesis_result["payload"] or fallback_answer(question, used_chunks)
+
+    response: Dict[str, Any] = {
+        "question": question,
+        "task": task,
+        "answer": payload.get("answer") or "",
+        "crossPaperSynthesis": payload.get("cross_paper_synthesis") or [],
+        "limitations": payload.get("limitations") or [],
+        "nextQuestions": payload.get("next_questions") or [],
+        "confidence": payload.get("confidence") or "medium",
+        "references": references,
+        "retrieval": {
+            "topK": top_k,
+            "returned": len(matches),
+            "namespace": namespace,
+            "embeddingModel": embed_model,
+            "chatModel": (os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+        },
+    }
+    if return_contexts:
+        response["contexts"] = used_chunks
+    return response
+
+
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    if (event.get("httpMethod") or "").upper() == "OPTIONS":
+        return create_response(200, {"ok": True})
+
+    try:
+        body = parse_event_body(event)
+        action = clean_text(str(body.get("action") or "ask")).lower()
+
+        if action == "ingest":
+            result = handle_ingest(body)
+            return create_response(200, result)
+
+        if action == "ask":
+            result = handle_ask(body)
+            return create_response(200, result)
+
+        return create_response(400, {"error": "Invalid action. Use 'ingest' or 'ask'."})
+    except ValueError as e:
+        return create_response(400, {"error": str(e)})
+    except Exception as e:
+        print(f"RAG pipeline error: {str(e)}")
+        return create_response(500, {"error": f"Internal server error: {str(e)}"})
