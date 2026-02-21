@@ -10,7 +10,8 @@ Modern academic literature search platform that combines three major research da
 
 **Key Value:** Traditional academic search requires manually cross-referencing multiple platforms. This aggregates results, deduplicates by DOI/title, enriches arXiv preprints with citation data via Semantic Scholar, and provides AI-generated summaries to quickly assess research landscapes.
 
-For implementation notes and architecture decisions, see: `docs/project_notes.md`.
+For implementation notes and architecture decisions, see: `docs/project_notes.md`.  
+For RAG-specific change history, see: `docs/rag_updates.md`.
 
 ## Features
 
@@ -28,9 +29,13 @@ For implementation notes and architecture decisions, see: `docs/project_notes.md
 
 ### RAG Pipeline (New)
 - 🧱 **Paper ingestion pipeline:** Accepts direct papers or query-driven discovery from OpenAlex/Semantic Scholar/Crossref
-- 🧩 **Chunking + embeddings:** Splits abstract/full text/PDF text into chunks and embeds via OpenAI embeddings
+- 🧩 **Section-aware chunking + embeddings:** Splits abstract/full text/PDF text into section-tagged chunks and embeds via OpenAI embeddings
 - 🗄️ **Vector database:** Pinecone-backed chunk storage and nearest-neighbor retrieval
 - 🧠 **Grounded synthesis:** LLM synthesis using retrieved chunks only, with inline citation tags like `[1]`
+- ⚖️ **Hybrid retrieval reranking:** Combines semantic similarity + lexical overlap + citation signal
+- 🧬 **Structured extraction layer:** Captures research question, methodology, dataset size, model type, findings, limitations, and future work during ingest
+- 🗺️ **Cross-paper insight engine:** New `insights` action for agreement clusters, contradictions, method differences, timeline evolution, and research gaps
+- 🔎 **Research gap detector:** New `gaps` action to surface recurring limitations/future-work gaps across retrieved evidence
 - 🧾 **Citation formatter:** Automatic APA/MLA/IEEE reference formatting in responses
 - 🛡️ **Timeout-safe ingest guardrails:** candidate caps, deferred batches, and query-PDF extraction limits
 - 🧱 **Metadata fallback ingestion:** papers without abstract/full text still ingest metadata context for recall
@@ -336,7 +341,7 @@ POST /search
 POST /rag
 ```
 
-`/rag` supports `action: "ingest"` and `action: "ask"`.
+`/rag` supports `action: "ingest"`, `action: "ask"`, `action: "insights"`, and `action: "gaps"`.
 
 **Ingest request:**
 ```json
@@ -382,6 +387,58 @@ POST /rag
 }
 ```
 
+**Insights request:**
+```json
+{
+  "action": "insights",
+  "question": "How is RAG evaluation methodology evolving and where do studies disagree?",
+  "topK": 12,
+  "namespace": "ml-corpus",
+  "citationStyle": "apa"
+}
+```
+
+**Insights response shape (truncated):**
+```json
+{
+  "insights": {
+    "agreementClusters": ["... [1]"],
+    "contradictions": ["... [2][4]"],
+    "methodologicalDifferences": ["... [3]"],
+    "timelineEvolution": ["2021: ... [5]"],
+    "researchGaps": ["... [1][6]"],
+    "paperProfiles": [
+      {
+        "citationNumber": 1,
+        "methodology": "...",
+        "datasetSize": "...",
+        "modelType": "..."
+      }
+    ]
+  }
+}
+```
+
+**Gaps request:**
+```json
+{
+  "action": "gaps",
+  "question": "What research gaps remain in retrieval-augmented generation benchmarking?",
+  "topK": 12,
+  "namespace": "ml-corpus",
+  "citationStyle": "apa"
+}
+```
+
+**Gaps response shape (truncated):**
+```json
+{
+  "gaps": ["... [1][3]"],
+  "supportingEvidence": ["... [2]"],
+  "references": [{ "citationNumber": 1, "formatted": "..." }]
+}
+```
+
 **Response:**
 ```json
 {
@@ -412,8 +469,9 @@ POST /rag
 - [ ] Infrastructure as Code (AWS SAM/CDK) for Lambda deployment
 - [ ] User accounts + saved searches
 - [ ] Citation graph visualization
+- [ ] Citation network proximity in retrieval scoring
 - [ ] Export to BibTeX/Zotero
-- [ ] PDF full-text search integration
+- [ ] Async ingestion pipeline for large corpora (SQS/Step Functions)
 - [ ] Collaborative annotation features
 
 ## Contributing

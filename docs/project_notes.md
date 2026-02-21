@@ -39,6 +39,16 @@ This project unifies cross-source search and citation-grounded RAG synthesis int
 - Use candidate caps + deferred reporting instead of hard failures.
 - Allow query-mode PDF extraction for a configurable top-N (`queryPdfPaperLimit`) rather than all-or-none.
 - Add metadata fallback ingestion so records with sparse text still become retrievable.
+- Add section-aware chunking so retrieval can target method/result/discussion evidence more precisely.
+- Extract structured paper fields at ingest time (`researchQuestion`, `methodology`, `datasetSize`, `modelType`, `keyFindings`, `limitationsText`, `futureWork`) and persist as vector metadata.
+
+### Retrieval and Synthesis Quality
+
+- Use hybrid reranking after vector search: semantic similarity + lexical overlap + citation signal.
+- Add dedicated cross-paper intelligence actions:
+  - `action=insights`: agreement clusters, contradictions, methodological differences, timeline evolution, and research gaps.
+  - `action=gaps`: focused research-gap detection using limitations/future-work evidence.
+- Keep citation-grounding constraints in generation to reduce hallucinated references.
 
 ### Validation and Maintainability
 
@@ -51,12 +61,15 @@ This project unifies cross-source search and citation-grounded RAG synthesis int
 1. Confirm CI passes (`frontend-build`, `backend-tests`).
 2. Run `scripts/project_eval.py` and inspect `benchmarks/eval/latest_report.json`.
 3. Validate live `/search` source distribution via `sourceBreakdown`.
-4. Validate live `/rag` responses include inline citations and references.
+4. Validate live `/rag` responses:
+   - `ask` includes inline citations and references.
+   - `insights` returns structured field-map outputs.
+   - `gaps` returns gap statements with supporting evidence.
 5. Track ingest timeout/deferred rates and tune caps/budgets as needed.
 
 ## Next Iteration Targets
 
-- Why source-diversity ranking improves fairness in relevance mode.
-- Why RAG ingestion must be timeout-aware in synchronous serverless APIs.
-- How grounded QA quality can be evaluated without expensive human labeling.
-- What would be next: async ingestion pipeline (SQS/Step Functions), offline retrieval eval set, and citation-accuracy audits.
+- Add offline retrieval eval with relevance labels for `ask`/`insights`/`gaps`.
+- Add citation-accuracy audits (claim-to-source mapping checks).
+- Add duplicate-paper identity reconciliation across providers at corpus scale.
+- Move large ingest jobs to async orchestration (SQS/Step Functions).
