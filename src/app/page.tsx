@@ -51,6 +51,7 @@ export default function Home() {
     sort?: 'relevance' | 'citations' | 'date';
     topic?: string;
     includeArxiv?: boolean;
+    includeCrossref?: boolean;
   } | null>(null);
 
   const [deepOverview, setDeepOverview] = useState<any | null>(null);
@@ -154,8 +155,9 @@ export default function Home() {
     sort?: 'relevance' | 'citations' | 'date';
     topic?: string;
     includeArxiv?: boolean;
+    includeCrossref?: boolean;
   }) => {
-    const { query, limit, fromYear, toYear, minCitations, sort, topic, includeArxiv } = params;
+    const { query, limit, fromYear, toYear, minCitations, sort, topic, includeArxiv, includeCrossref } = params;
     if (!query.trim()) {
       setError('Please enter a search query');
       return;
@@ -179,7 +181,7 @@ export default function Home() {
       const response = await fetch(`${apiUrl}/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, limit, fromYear, toYear, minCitations, sort, topic, includeArxiv }),
+        body: JSON.stringify({ query, limit, fromYear, toYear, minCitations, sort, topic, includeArxiv, includeCrossref }),
       });
 
       if (!response.ok) throw new Error(`API error: ${response.status}`);

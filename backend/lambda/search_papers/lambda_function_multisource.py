@@ -6,6 +6,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from urllib.parse import quote
 from decimal import Decimal
 import re
+import math
 
 try:
     import boto3  # type: ignore
@@ -19,6 +20,12 @@ table_name = os.environ.get('DYNAMODB_TABLE', 'academic-papers-cache')
 DEFAULT_USER_AGENT = os.environ.get('HTTP_USER_AGENT', 'academic-literature-ai/1.0')
 
 DEEP_OVERVIEW_TTL_SECONDS = int(os.environ.get('DEEP_OVERVIEW_TTL_SECONDS', str(24 * 60 * 60)))
+SEARCH_DEFAULT_LIMIT = int(os.environ.get('SEARCH_DEFAULT_LIMIT', '20'))
+SEARCH_MAX_LIMIT = int(os.environ.get('SEARCH_MAX_LIMIT', '100'))
+SEARCH_OVERFETCH_FACTOR = float(os.environ.get('SEARCH_OVERFETCH_FACTOR', '2.0'))
+SEARCH_SOURCE_MAX_FETCH = int(os.environ.get('SEARCH_SOURCE_MAX_FETCH', '80'))
+SEARCH_HTTP_TIMEOUT_SECONDS = int(os.environ.get('SEARCH_HTTP_TIMEOUT_SECONDS', '20'))
+SEARCH_ENABLE_CROSSREF_DEFAULT = (os.environ.get('SEARCH_ENABLE_CROSSREF_DEFAULT', 'true').strip().lower() in {'1', 'true', 'yes', 'y', 'on'})
 
 def decimal_to_number(obj):
     """Convert Decimal objects to int or float for JSON serialization"""
@@ -59,6 +66,35 @@ def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
 
     return {}
 
+
+def clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(min_value, min(max_value, parsed))
+
+
+def as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {'1', 'true', 'yes', 'y', 'on'}:
+            return True
+        if v in {'0', 'false', 'no', 'n', 'off'}:
+            return False
+    return bool(value)
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
 def lambda_handler(event, context):
     """
     Lambda handler for searching academic papers from multiple sources
@@ -73,9 +109,9 @@ def lambda_handler(event, context):
     try:
         # Parse request body (supports API Gateway proxy + direct Lambda tests)
         body = parse_event_body(event)
-        query = body.get('query', '').strip()
-        field = body.get('field', '')
-        limit = min(body.get('limit', 20), 50)  # Cap at 50
+        query = (body.get('query', '') or '').strip()
+        field = (body.get('field', '') or '').strip()
+        limit = clamp_int(body.get('limit'), SEARCH_DEFAULT_LIMIT, 1, SEARCH_MAX_LIMIT)
         from_year = body.get('fromYear', None)
         to_year = body.get('toYear', None)
         min_citations = body.get('minCitations', None)
@@ -83,16 +119,25 @@ def lambda_handler(event, context):
         topic = (body.get('topic', '') or '').strip()
         concept_ids_raw = body.get('conceptIds', None)
         include_arxiv = body.get('includeArxiv', None)
+        include_crossref = body.get('includeCrossref', None)
         deep_overview = bool(body.get('deepOverview', False))
         deep_overview_max_papers = body.get('deepOverviewMaxPapers', None)
         force_refresh = bool(body.get('forceRefresh', False))
         debug = bool(body.get('debug', False))
 
+        if sort_mode not in {'relevance', 'citations', 'date'}:
+            sort_mode = 'relevance'
+
         # Default behavior: arXiv is opt-in (otherwise it can skew results toward physics/CS).
         # If a client explicitly sets includeArxiv, respect it.
-        if include_arxiv is None:
-            include_arxiv = False
-        include_arxiv = bool(include_arxiv)
+        include_arxiv = as_bool(include_arxiv, False)
+        include_crossref = as_bool(include_crossref, SEARCH_ENABLE_CROSSREF_DEFAULT)
+
+        # Over-fetch from each source to improve recall before de-dup/filtering.
+        source_fetch_limit = min(
+            SEARCH_SOURCE_MAX_FETCH,
+            max(limit, int(math.ceil(limit * max(1.0, SEARCH_OVERFETCH_FACTOR)))),
+        )
         
         if not query:
             return create_response(400, {'error': 'Query parameter is required'})
@@ -107,6 +152,7 @@ def lambda_handler(event, context):
             sort_mode,
             resolved_concept_ids,
             include_arxiv=include_arxiv,
+            include_crossref=include_crossref,
             from_year=from_year,
             to_year=to_year,
             min_citations=min_citations,
@@ -138,6 +184,7 @@ def lambda_handler(event, context):
                 'count': len(filtered_cached[:limit]),
                 'cached': True,
                 'sources': ['cache'],
+                'sourceBreakdown': source_counts(filtered_cached[:limit]),
                 'summary': overall_summary,
                 **({'deep_overview': deep_overview_result} if deep_overview_result is not None else {}),
                 **({'debug': {
@@ -146,7 +193,9 @@ def lambda_handler(event, context):
                     'topic': topic,
                     'conceptIds': resolved_concept_ids,
                     'includeArxiv': include_arxiv,
+                    'includeCrossref': include_crossref,
                     'deepOverview': deep_overview,
+                    'sourceFetchLimit': source_fetch_limit,
                 }} if debug else {})
             })
         
@@ -158,22 +207,20 @@ def lambda_handler(event, context):
         source_debug: Dict[str, Any] = {}
         
         # 1. OpenAlex (primary - best rate limits)
-        openalex_ok = False
         try:
             openalex_papers = search_openalex(
                 query,
                 field,
-                limit,
+                source_fetch_limit,
                 from_year,
                 to_year,
                 min_citations,
                 sort_mode=sort_mode,
                 concept_ids=resolved_concept_ids,
             )
-            openalex_papers, next_rank = attach_rank(openalex_papers, next_rank)
+            openalex_papers, next_rank = attach_rank(openalex_papers, next_rank, 'OpenAlex')
             all_papers.extend(openalex_papers)
             sources_used.append('OpenAlex')
-            openalex_ok = len(openalex_papers) > 0
             source_debug['openalex'] = {
                 'ok': True,
                 'count': len(openalex_papers),
@@ -187,31 +234,62 @@ def lambda_handler(event, context):
             }
         
         # 2. Semantic Scholar (broad coverage)
-        if len(all_papers) < limit:
+        try:
+            ss_papers = search_semantic_scholar(query, field, source_fetch_limit)
+            ss_papers, next_rank = attach_rank(ss_papers, next_rank, 'Semantic Scholar')
+            all_papers.extend(ss_papers)
+            sources_used.append('Semantic Scholar')
+            source_debug['semanticScholar'] = {
+                'ok': True,
+                'count': len(ss_papers),
+            }
+            print(f"Semantic Scholar returned {len(ss_papers)} papers")
+        except Exception as e:
+            print(f"Semantic Scholar error: {str(e)}")
+            source_debug['semanticScholar'] = {
+                'ok': False,
+                'error': str(e),
+            }
+
+        # 3. Crossref (broad cross-discipline bibliographic coverage)
+        if include_crossref:
             try:
-                ss_papers = search_semantic_scholar(query, field, limit - len(all_papers))
-                ss_papers, next_rank = attach_rank(ss_papers, next_rank)
-                all_papers.extend(ss_papers)
-                sources_used.append('Semantic Scholar')
-                source_debug['semanticScholar'] = {
+                crossref_papers = search_crossref(
+                    query,
+                    field,
+                    source_fetch_limit,
+                    from_year=from_year,
+                    to_year=to_year,
+                    sort_mode=sort_mode,
+                )
+                crossref_papers, next_rank = attach_rank(crossref_papers, next_rank, 'Crossref')
+                all_papers.extend(crossref_papers)
+                sources_used.append('Crossref')
+                source_debug['crossref'] = {
                     'ok': True,
-                    'count': len(ss_papers),
+                    'count': len(crossref_papers),
                 }
-                print(f"Semantic Scholar returned {len(ss_papers)} papers")
+                print(f"Crossref returned {len(crossref_papers)} papers")
             except Exception as e:
-                print(f"Semantic Scholar error: {str(e)}")
-                source_debug['semanticScholar'] = {
+                print(f"Crossref error: {str(e)}")
+                source_debug['crossref'] = {
                     'ok': False,
                     'error': str(e),
                 }
+        else:
+            source_debug['crossref'] = {
+                'ok': True,
+                'count': 0,
+                'skipped': True,
+            }
 
-        # 3. arXiv (opt-in preprints; can skew non-STEM queries)
-        if include_arxiv and len(all_papers) < limit:
+        # 4. arXiv (opt-in preprints; can skew non-STEM queries)
+        if include_arxiv:
             try:
-                arxiv_papers = search_arxiv(query, limit - len(all_papers))
+                arxiv_papers = search_arxiv(query, source_fetch_limit)
                 # arXiv doesn't provide citation counts; enrich via Semantic Scholar when possible.
                 arxiv_papers = enrich_arxiv_with_semantic_scholar(arxiv_papers)
-                arxiv_papers, next_rank = attach_rank(arxiv_papers, next_rank)
+                arxiv_papers, next_rank = attach_rank(arxiv_papers, next_rank, 'arXiv')
                 all_papers.extend(arxiv_papers)
                 sources_used.append('arXiv')
                 source_debug['arxiv'] = {
@@ -232,21 +310,21 @@ def lambda_handler(event, context):
         # Apply filters (for sources that don't support them well)
         unique_papers = apply_filters(unique_papers, from_year, to_year, min_citations)
         
-        # Respect requested sort. For relevance, keep source ordering (stable by _rank).
+        # Respect requested sort. Relevance mode uses source-diversified ranking.
         if sort_mode == 'citations':
-            unique_papers.sort(key=lambda p: (int(p.get('citationCount', 0) or 0), int(p.get('year', 0) or 0)), reverse=True)
+            unique_papers.sort(key=lambda p: (safe_int(p.get('citationCount'), 0), safe_int(p.get('year'), 0)), reverse=True)
+            result_papers = unique_papers[:limit]
         elif sort_mode == 'date':
-            unique_papers.sort(key=lambda p: (int(p.get('year', 0) or 0), int(p.get('citationCount', 0) or 0)), reverse=True)
+            unique_papers.sort(key=lambda p: (safe_int(p.get('year'), 0), safe_int(p.get('citationCount'), 0)), reverse=True)
+            result_papers = unique_papers[:limit]
         else:
-            unique_papers.sort(key=lambda p: int(p.get('_rank', 0) or 0))
-        
-        # Limit to requested number
-        result_papers = unique_papers[:limit]
+            result_papers = relevance_rank_with_source_diversity(unique_papers, limit)
 
         # Remove internal fields
         for p in result_papers:
-            if '_rank' in p:
-                del p['_rank']
+            for key in ('_rank', '_sourceRank', '_relevanceScore'):
+                if key in p:
+                    del p[key]
         
         # Generate overall summary of the search results
         overall_summary = generate_search_summary(query, result_papers, sources_used)
@@ -269,6 +347,7 @@ def lambda_handler(event, context):
             'count': len(result_papers),
             'cached': False,
             'sources': sources_used,
+            'sourceBreakdown': source_counts(result_papers),
             'summary': overall_summary,
             **({'deep_overview': deep_overview_result} if deep_overview_result is not None else {}),
             **({'debug': {
@@ -277,7 +356,9 @@ def lambda_handler(event, context):
                 'topic': topic,
                 'conceptIds': resolved_concept_ids,
                 'includeArxiv': include_arxiv,
+                'includeCrossref': include_crossref,
                 'deepOverview': deep_overview,
+                'sourceFetchLimit': source_fetch_limit,
                 'sources': source_debug,
                 'openai': overall_summary.get('_meta', None) if isinstance(overall_summary, dict) else None,
             }} if debug else {})
@@ -337,7 +418,7 @@ def resolve_openalex_concepts(topic: str, max_results: int = 2) -> List[str]:
                 'per_page': max(1, min(max_results, 5)),
             },
             headers={'User-Agent': DEFAULT_USER_AGENT},
-            timeout=10,
+            timeout=min(SEARCH_HTTP_TIMEOUT_SECONDS, 12),
         )
         response.raise_for_status()
         data = response.json()
@@ -361,6 +442,7 @@ def build_cache_key(
     concept_ids: List[str],
     *,
     include_arxiv: bool = False,
+    include_crossref: bool = True,
     from_year: Any = None,
     to_year: Any = None,
     min_citations: Any = None,
@@ -368,6 +450,7 @@ def build_cache_key(
     sort_mode = (sort_mode or 'relevance').strip().lower()
     concept_part = '|'.join(concept_ids) if concept_ids else ''
     include_part = '1' if include_arxiv else '0'
+    crossref_part = '1' if include_crossref else '0'
 
     def _norm_int(x: Any) -> str:
         if x is None:
@@ -383,7 +466,7 @@ def build_cache_key(
     fy = _norm_int(from_year)
     ty = _norm_int(to_year)
     mc = _norm_int(min_citations)
-    return f"{query}:{field}:sort={sort_mode}:concepts={concept_part}:arxiv={include_part}:from={fy}:to={ty}:mincit={mc}"
+    return f"{query}:{field}:sort={sort_mode}:concepts={concept_part}:arxiv={include_part}:crossref={crossref_part}:from={fy}:to={ty}:mincit={mc}"
 
 
 def search_openalex(
@@ -423,15 +506,31 @@ def search_openalex(
 
     # Optional filters for more specific searches
     filters: List[str] = []
+    from_year_i = None
+    to_year_i = None
+    min_citations_i = None
     try:
-        if from_year:
-            filters.append(f"from_publication_date:{int(from_year)}-01-01")
-        if to_year:
-            filters.append(f"to_publication_date:{int(to_year)}-12-31")
-        if min_citations is not None and str(min_citations).strip() != '':
-            filters.append(f"cited_by_count:>{int(min_citations)}")
+        if from_year is not None and str(from_year).strip() != '':
+            from_year_i = int(from_year)
     except Exception:
-        filters = []
+        from_year_i = None
+    try:
+        if to_year is not None and str(to_year).strip() != '':
+            to_year_i = int(to_year)
+    except Exception:
+        to_year_i = None
+    try:
+        if min_citations is not None and str(min_citations).strip() != '':
+            min_citations_i = int(min_citations)
+    except Exception:
+        min_citations_i = None
+
+    if from_year_i is not None:
+        filters.append(f"from_publication_date:{from_year_i}-01-01")
+    if to_year_i is not None:
+        filters.append(f"to_publication_date:{to_year_i}-12-31")
+    if min_citations_i is not None:
+        filters.append(f"cited_by_count:>{min_citations_i}")
 
     concept_ids_n = normalize_concept_ids(concept_ids or [])
     if concept_ids_n:
@@ -442,7 +541,7 @@ def search_openalex(
     if filters:
         params['filter'] = ','.join(filters)
     
-    response = requests.get(base_url, params=params, headers={'User-Agent': DEFAULT_USER_AGENT}, timeout=30)
+    response = requests.get(base_url, params=params, headers={'User-Agent': DEFAULT_USER_AGENT}, timeout=SEARCH_HTTP_TIMEOUT_SECONDS)
     response.raise_for_status()
     
     data = response.json()
@@ -512,7 +611,7 @@ def search_arxiv(query: str, limit: int) -> List[Dict[str, Any]]:
         'sortOrder': 'descending'
     }
     
-    response = requests.get(base_url, params=params, headers={'User-Agent': DEFAULT_USER_AGENT}, timeout=30)
+    response = requests.get(base_url, params=params, headers={'User-Agent': DEFAULT_USER_AGENT}, timeout=SEARCH_HTTP_TIMEOUT_SECONDS)
     response.raise_for_status()
     
     # Parse XML response
@@ -578,7 +677,7 @@ def search_semantic_scholar(query: str, field: str, limit: int) -> List[Dict[str
     if api_key:
         headers['x-api-key'] = api_key
     
-    response = requests.get(base_url, params=params, headers=headers, timeout=30)
+    response = requests.get(base_url, params=params, headers=headers, timeout=SEARCH_HTTP_TIMEOUT_SECONDS)
     response.raise_for_status()
     
     data = response.json()
@@ -605,6 +704,91 @@ def search_semantic_scholar(query: str, field: str, limit: int) -> List[Dict[str
     return formatted_papers
 
 
+def search_crossref(
+    query: str,
+    field: str,
+    limit: int,
+    *,
+    from_year: Any = None,
+    to_year: Any = None,
+    sort_mode: str = 'relevance',
+) -> List[Dict[str, Any]]:
+    """Search papers using Crossref API for broad cross-discipline coverage."""
+    base_url = "https://api.crossref.org/works"
+    search_query = query
+    if field:
+        search_query = f"{query} {field}"
+
+    sort_mode = (sort_mode or 'relevance').strip().lower()
+    if sort_mode not in {'relevance', 'citations', 'date'}:
+        sort_mode = 'relevance'
+    sort_param = 'relevance' if sort_mode == 'relevance' else 'is-referenced-by-count' if sort_mode == 'citations' else 'published'
+
+    filters: List[str] = []
+    try:
+        if from_year is not None and str(from_year).strip() != '':
+            filters.append(f"from-pub-date:{int(from_year)}-01-01")
+    except Exception:
+        pass
+    try:
+        if to_year is not None and str(to_year).strip() != '':
+            filters.append(f"until-pub-date:{int(to_year)}-12-31")
+    except Exception:
+        pass
+
+    params: Dict[str, Any] = {
+        'query.bibliographic': search_query,
+        'rows': limit,
+        'sort': sort_param,
+        'order': 'desc',
+        'select': 'DOI,title,author,issued,container-title,URL,is-referenced-by-count',
+        'mailto': os.environ.get('CROSSREF_MAILTO', os.environ.get('OPENALEX_MAILTO', 'your-email@example.com')),
+    }
+    if filters:
+        params['filter'] = ','.join(filters)
+
+    response = requests.get(base_url, params=params, headers={'User-Agent': DEFAULT_USER_AGENT}, timeout=SEARCH_HTTP_TIMEOUT_SECONDS)
+    response.raise_for_status()
+
+    data = response.json() or {}
+    items = (((data.get('message') or {}).get('items')) or [])
+    formatted_papers: List[Dict[str, Any]] = []
+    for item in items:
+        title_list = item.get('title') or []
+        container_titles = item.get('container-title') or []
+        issued = item.get('issued') or {}
+        date_parts = issued.get('date-parts') or []
+        year = None
+        if date_parts and isinstance(date_parts, list) and date_parts[0]:
+            try:
+                year = int(date_parts[0][0])
+            except Exception:
+                year = None
+        authors: List[str] = []
+        for a in item.get('author', []) or []:
+            family = (a.get('family') or '').strip()
+            given = (a.get('given') or '').strip()
+            name = f"{given} {family}".strip()
+            if name:
+                authors.append(name)
+        doi = (item.get('DOI') or '').strip().lower()
+        formatted_papers.append({
+            'paperId': doi.replace('/', '_') if doi else '',
+            'title': title_list[0] if title_list else None,
+            'abstract': None,
+            'authors': authors,
+            'year': year,
+            'citationCount': safe_int(item.get('is-referenced-by-count'), 0),
+            'publicationDate': f"{year}-01-01" if year else None,
+            'venue': container_titles[0] if container_titles else None,
+            'url': item.get('URL'),
+            'doi': doi or None,
+            'pdfUrl': None,
+            'source': 'Crossref',
+        })
+    return formatted_papers
+
+
 def deduplicate_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Remove duplicate papers based on DOI or title similarity.
 
@@ -623,6 +807,14 @@ def deduplicate_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rank = int(p.get('_rank', 10**9) or 10**9)
         # Higher is better for first three; lower is better for rank (so negate it)
         return (citations, has_abstract, has_pdf, -rank)
+
+    def merge_source_lists(a: Dict[str, Any], b: Dict[str, Any]) -> List[str]:
+        merged: List[str] = []
+        for src in [*(a.get('sources') or [a.get('source')]), *(b.get('sources') or [b.get('source')])]:
+            src_s = (src or '').strip()
+            if src_s and src_s not in merged:
+                merged.append(src_s)
+        return merged
 
     by_key: Dict[str, Dict[str, Any]] = {}
 
@@ -643,26 +835,37 @@ def deduplicate_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         existing = by_key.get(key)
         if not existing:
+            p['sources'] = merge_source_lists({}, p)
             by_key[key] = p
             continue
 
+        merged_sources = merge_source_lists(existing, p)
         if score(p) > score(existing):
             # Preserve earliest rank across representations
             if existing.get('_rank') is not None and p.get('_rank') is not None:
                 p['_rank'] = min(int(existing['_rank']), int(p['_rank']))
+            if existing.get('_sourceRank') is not None and p.get('_sourceRank') is not None:
+                p['_sourceRank'] = min(int(existing['_sourceRank']), int(p['_sourceRank']))
+            p['sources'] = merged_sources
             by_key[key] = p
         else:
             # Still preserve earliest rank
             if existing.get('_rank') is not None and p.get('_rank') is not None:
                 existing['_rank'] = min(int(existing['_rank']), int(p['_rank']))
+            if existing.get('_sourceRank') is not None and p.get('_sourceRank') is not None:
+                existing['_sourceRank'] = min(int(existing['_sourceRank']), int(p['_sourceRank']))
+            existing['sources'] = merged_sources
 
     return list(by_key.values())
 
 
-def attach_rank(papers: List[Dict[str, Any]], start_rank: int) -> Tuple[List[Dict[str, Any]], int]:
+def attach_rank(papers: List[Dict[str, Any]], start_rank: int, source_name: str) -> Tuple[List[Dict[str, Any]], int]:
     rank = start_rank
-    for p in papers:
+    for idx, p in enumerate(papers):
         p['_rank'] = rank
+        p['_sourceRank'] = idx
+        if not p.get('source'):
+            p['source'] = source_name
         rank += 1
     return papers, rank
 
@@ -704,12 +907,12 @@ def enrich_arxiv_with_semantic_scholar(papers: List[Dict[str, Any]], max_to_enri
             if api_key:
                 headers['x-api-key'] = api_key
 
-            resp = requests.get(url, params={'fields': fields}, headers=headers, timeout=10)
+            resp = requests.get(url, params={'fields': fields}, headers=headers, timeout=min(SEARCH_HTTP_TIMEOUT_SECONDS, 12))
             if resp.status_code != 200 and canonical_id and canonical_id != paper_id:
                 # If the canonical form fails, try the original (some APIs may accept the versioned ID).
                 paper_ref2 = f"arXiv:{paper_id}"
                 url2 = f"https://api.semanticscholar.org/graph/v1/paper/{quote(paper_ref2, safe='')}"
-                resp = requests.get(url2, params={'fields': fields}, headers=headers, timeout=10)
+                resp = requests.get(url2, params={'fields': fields}, headers=headers, timeout=min(SEARCH_HTTP_TIMEOUT_SECONDS, 12))
 
             if resp.status_code == 200:
                 data = resp.json() or {}
@@ -735,6 +938,71 @@ def enrich_arxiv_with_semantic_scholar(papers: List[Dict[str, Any]], max_to_enri
     if len(papers) > max_to_enrich:
         enriched.extend(papers[max_to_enrich:])
     return enriched
+
+
+def relevance_rank_with_source_diversity(papers: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    """Rank by relevance while interleaving sources to reduce source-order bias."""
+    if not papers:
+        return []
+
+    current_year = datetime.now().year
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+
+    for paper in papers:
+        source_rank = safe_int(paper.get('_sourceRank'), safe_int(paper.get('_rank'), 10**6))
+        citations = max(0, safe_int(paper.get('citationCount'), 0))
+        year = safe_int(paper.get('year'), 0)
+        has_abstract = 1 if (paper.get('abstract') or '').strip() else 0
+        has_pdf = 1 if (paper.get('pdfUrl') or '').strip() else 0
+
+        base_rank_score = 1.0 / (1.0 + float(source_rank))
+        citation_score = min(math.log1p(float(citations)) / 8.0, 0.6)
+        if year > 0:
+            age = max(0, current_year - year)
+            recency_score = max(0.0, 1.0 - (min(age, 40) / 40.0)) * 0.25
+        else:
+            recency_score = 0.0
+        metadata_score = (0.15 * has_abstract) + (0.05 * has_pdf)
+        paper['_relevanceScore'] = round(base_rank_score + citation_score + recency_score + metadata_score, 6)
+
+        source = (paper.get('source') or 'Unknown').strip() or 'Unknown'
+        buckets.setdefault(source, []).append(paper)
+
+    for source_name in buckets:
+        buckets[source_name].sort(
+            key=lambda p: (float(p.get('_relevanceScore', 0.0)), -safe_int(p.get('_sourceRank'), safe_int(p.get('_rank'), 10**6))),
+            reverse=True,
+        )
+
+    source_order = sorted(
+        buckets.keys(),
+        key=lambda s: (len(buckets[s]), max(float(p.get('_relevanceScore', 0.0)) for p in buckets[s])),
+        reverse=True,
+    )
+
+    ranked: List[Dict[str, Any]] = []
+    while len(ranked) < limit:
+        progressed = False
+        for source_name in source_order:
+            bucket = buckets[source_name]
+            if not bucket:
+                continue
+            ranked.append(bucket.pop(0))
+            progressed = True
+            if len(ranked) >= limit:
+                break
+        if not progressed:
+            break
+
+    return ranked
+
+
+def source_counts(papers: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for p in papers:
+        source = (p.get('source') or 'Unknown').strip() or 'Unknown'
+        counts[source] = counts.get(source, 0) + 1
+    return counts
 
 
 def apply_filters(papers: List[Dict[str, Any]], from_year=None, to_year=None, min_citations=None) -> List[Dict[str, Any]]:

@@ -12,6 +12,7 @@ interface SearchBarProps {
     sort?: 'relevance' | 'citations' | 'date';
     topic?: string;
     includeArxiv?: boolean;
+    includeCrossref?: boolean;
   }) => void;
   loading: boolean;
 }
@@ -26,6 +27,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
   const [sort, setSort] = useState<'relevance' | 'citations' | 'date'>('relevance');
   const [topic, setTopic] = useState<string>('');
   const [includeArxiv, setIncludeArxiv] = useState<boolean>(false);
+  const [includeCrossref, setIncludeCrossref] = useState<boolean>(true);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Ctrl+K to focus search
@@ -52,6 +54,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
       sort,
       topic: topic.trim() ? topic.trim() : undefined,
       includeArxiv,
+      includeCrossref,
     });
   };
 
@@ -190,7 +193,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
                 />
               </div>
 
-              <div className="md:col-span-2 flex items-center gap-3 pt-2">
+              <div className="md:col-span-3 flex flex-wrap items-center gap-5 pt-2">
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input
                     id="includeArxiv"
@@ -203,6 +206,21 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
                   <div className="w-9 h-5 bg-slate-700 peer-focus:ring-2 peer-focus:ring-primary-500/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-500"></div>
                   <span className="ml-2.5 text-sm text-slate-300">
                     Include arXiv preprints
+                  </span>
+                </label>
+
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    id="includeCrossref"
+                    type="checkbox"
+                    checked={includeCrossref}
+                    onChange={(e) => setIncludeCrossref(e.target.checked)}
+                    className="sr-only peer"
+                    disabled={loading}
+                  />
+                  <div className="w-9 h-5 bg-slate-700 peer-focus:ring-2 peer-focus:ring-primary-500/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-500"></div>
+                  <span className="ml-2.5 text-sm text-slate-300">
+                    Include Crossref records
                   </span>
                 </label>
               </div>
@@ -229,6 +247,8 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
               <option value={20}>20</option>
               <option value={30}>30</option>
               <option value={50}>50</option>
+              <option value={75}>75</option>
+              <option value={100}>100</option>
             </select>
 
             {/* Search Button */}

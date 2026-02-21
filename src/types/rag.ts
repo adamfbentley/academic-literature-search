@@ -10,6 +10,7 @@ export interface RagIngestRequest {
   query?: string;
   limit?: number;
   maxCandidates?: number;
+  queryPdfPaperLimit?: number;
   sources?: RagSource[];
   papers?: Paper[];
   extractPdfText?: boolean;
@@ -45,6 +46,8 @@ export interface RagIngestResponse {
   requestedPdfExtraction?: boolean;
   effectivePdfExtraction?: boolean;
   pdfExtractionDisabledReason?: string | null;
+  queryPdfPaperLimit?: number | null;
+  queryPdfExtractionSelected?: number;
   discoveryBudgetSeconds?: number;
   discoveryBudgetHit?: boolean;
   embeddingModel?: string;

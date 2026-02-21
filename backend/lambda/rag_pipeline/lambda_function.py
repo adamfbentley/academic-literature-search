@@ -25,6 +25,7 @@ EXTERNAL_API_TIMEOUT_SECONDS = int(os.environ.get("RAG_EXTERNAL_API_TIMEOUT_SECO
 MAX_PDF_PAGES = int(os.environ.get("RAG_MAX_PDF_PAGES", "8"))
 MAX_CHUNKS_PER_PAPER = int(os.environ.get("RAG_MAX_CHUNKS_PER_PAPER", "16"))
 MAX_INGEST_CANDIDATES = int(os.environ.get("RAG_MAX_INGEST_CANDIDATES", "10"))
+MAX_QUERY_PDF_PAPERS = int(os.environ.get("RAG_MAX_QUERY_PDF_PAPERS", "2"))
 
 
 def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -139,7 +140,36 @@ def normalize_paper(raw: Dict[str, Any]) -> Dict[str, Any]:
         "pdfUrl": clean_text(str(raw.get("pdfUrl") or "")),
         "doi": doi,
         "source": clean_text(str(raw.get("source") or "")) or "custom",
+        "allowPdfExtract": as_bool(raw.get("allowPdfExtract"), as_bool(raw.get("_allowPdfExtract"), True)),
     }
+
+
+def build_metadata_fallback_text(paper: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    title = clean_text(str(paper.get("title") or ""))
+    if title:
+        parts.append(f"Title: {title}.")
+    authors = [a for a in (paper.get("authors") or []) if clean_text(str(a))]
+    if authors:
+        parts.append(f"Authors: {', '.join(authors[:6])}.")
+    year = as_int(paper.get("year"), 0)
+    if year > 0:
+        parts.append(f"Year: {year}.")
+    venue = clean_text(str(paper.get("venue") or ""))
+    if venue:
+        parts.append(f"Venue: {venue}.")
+    source = clean_text(str(paper.get("source") or ""))
+    if source:
+        parts.append(f"Source: {source}.")
+    doi = clean_text(str(paper.get("doi") or ""))
+    if doi:
+        parts.append(f"DOI: {doi}.")
+    url = clean_text(str(paper.get("url") or ""))
+    if url:
+        parts.append(f"URL: {url}.")
+    if parts:
+        parts.append("This record has limited full text, so retrieval should be treated as metadata-level evidence.")
+    return clean_text(" ".join(parts))
 
 
 def _normalize_pinecone_host(host: str) -> str:
@@ -916,12 +946,14 @@ def ingest_papers(
         paper = normalize_paper(raw)
         try:
             text_parts: List[str] = []
+            if paper.get("title"):
+                text_parts.append(str(paper["title"]))
             if paper.get("fullText"):
                 text_parts.append(paper["fullText"])
             if paper.get("abstract"):
                 text_parts.append(paper["abstract"])
 
-            should_extract_pdf = extract_pdf and bool(paper.get("pdfUrl"))
+            should_extract_pdf = extract_pdf and as_bool(paper.get("allowPdfExtract"), True) and bool(paper.get("pdfUrl"))
             if should_extract_pdf:
                 if max_seconds and (time.time() - start_time) >= max(1, max_seconds - 4):
                     skipped.append(
@@ -942,14 +974,16 @@ def ingest_papers(
 
             merged_text = clean_text("\n\n".join([x for x in text_parts if x]))
             if not merged_text:
-                skipped.append(
-                    {
-                        "paperId": paper.get("paperId"),
-                        "title": paper.get("title"),
-                        "reason": "No abstract/fullText/PDF text available",
-                    }
-                )
-                continue
+                merged_text = build_metadata_fallback_text(paper)
+                if not merged_text:
+                    skipped.append(
+                        {
+                            "paperId": paper.get("paperId"),
+                            "title": paper.get("title"),
+                            "reason": "No abstract/fullText/PDF text available",
+                        }
+                    )
+                    continue
 
             chunks = chunk_text(merged_text, chunk_size_words, overlap_words, min_chunk_words)
             if not chunks:
@@ -1028,6 +1062,7 @@ def handle_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
     query = clean_text(str(body.get("query") or ""))
     limit = clamp_int(body.get("limit"), 8, 1, 50)
     max_candidates = clamp_int(body.get("maxCandidates"), MAX_INGEST_CANDIDATES, 1, 40)
+    query_pdf_paper_limit = clamp_int(body.get("queryPdfPaperLimit"), MAX_QUERY_PDF_PAPERS, 0, 8)
     extract_pdf = as_bool(body.get("extractPdfText"), True)
     chunk_size_words = clamp_int(body.get("chunkSizeWords"), 220, 80, 800)
     overlap_words = clamp_int(body.get("chunkOverlapWords"), 40, 0, 200)
@@ -1060,9 +1095,24 @@ def handle_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
 
     extract_pdf_effective = extract_pdf
     pdf_extraction_disabled_reason: Optional[str] = None
+    query_pdf_extraction_selected = 0
     if query and extract_pdf:
-        extract_pdf_effective = False
-        pdf_extraction_disabled_reason = "PDF extraction is disabled for query-based ingestion to stay within API Gateway timeout."
+        for p in selected_candidates:
+            p["allowPdfExtract"] = False
+        if query_pdf_paper_limit > 0:
+            for p in selected_candidates:
+                if query_pdf_extraction_selected >= query_pdf_paper_limit:
+                    break
+                if p.get("pdfUrl"):
+                    p["allowPdfExtract"] = True
+                    query_pdf_extraction_selected += 1
+        extract_pdf_effective = query_pdf_extraction_selected > 0
+        if query_pdf_extraction_selected == 0:
+            pdf_extraction_disabled_reason = "PDF extraction requested, but no eligible PDF URLs were selected in this query batch."
+        elif query_pdf_extraction_selected < len(selected_candidates):
+            pdf_extraction_disabled_reason = (
+                f"PDF extraction limited to top {query_pdf_extraction_selected} query candidates to stay within API Gateway timeout."
+            )
     elif extract_pdf and len(selected_candidates) > 6:
         extract_pdf_effective = False
         pdf_extraction_disabled_reason = "PDF extraction was disabled because candidate volume is too high for synchronous ingestion."
@@ -1111,6 +1161,8 @@ def handle_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
         "requestedPdfExtraction": extract_pdf,
         "effectivePdfExtraction": extract_pdf_effective,
         "pdfExtractionDisabledReason": pdf_extraction_disabled_reason,
+        "queryPdfPaperLimit": query_pdf_paper_limit if query else None,
+        "queryPdfExtractionSelected": query_pdf_extraction_selected if query else 0,
         "discoveryBudgetSeconds": discovery_budget,
         "discoveryBudgetHit": discovery_budget_hit,
         "embeddingModel": (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip(),

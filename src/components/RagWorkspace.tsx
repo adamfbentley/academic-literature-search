@@ -53,6 +53,7 @@ export default function RagWorkspace({
   const [chunkOverlapWords, setChunkOverlapWords] = useState(40);
   const [minChunkWords, setMinChunkWords] = useState(60);
   const [timeBudgetSeconds, setTimeBudgetSeconds] = useState(24);
+  const [queryPdfPaperLimit, setQueryPdfPaperLimit] = useState(2);
   const [sources, setSources] = useState<Record<RagSource, boolean>>({
     openalex: true,
     semantic_scholar: true,
@@ -164,6 +165,7 @@ export default function RagWorkspace({
         maxCandidates: ingestLimit,
         sources: selectedSources,
         extractPdfText,
+        queryPdfPaperLimit,
         chunkSizeWords,
         chunkOverlapWords,
         minChunkWords,
@@ -356,6 +358,16 @@ export default function RagWorkspace({
                   />
                 </div>
 
+                <div className="w-full sm:w-44">
+                  <label className="block text-[11px] text-slate-600 mb-1">Query PDF papers</label>
+                  <input
+                    type="number"
+                    value={queryPdfPaperLimit}
+                    onChange={(e) => setQueryPdfPaperLimit(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-700/50 bg-surface-900 text-white text-sm focus-ring"
+                  />
+                </div>
+
                 <div className="flex flex-wrap items-center gap-3 pt-1">
                   <label className="inline-flex items-center gap-2 text-xs text-slate-400">
                     <input type="checkbox" checked={sources.openalex} onChange={(e) => setSourceChecked('openalex', e.target.checked)} />
@@ -384,7 +396,7 @@ export default function RagWorkspace({
                 </button>
 
                 <p className="text-[11px] text-slate-600">
-                  Tip: API Gateway times out around 29s. Keep PDF extraction off for quick ingestion, then run smaller batches with PDF on.
+                  Tip: API Gateway times out around 29s. Query-based PDF extraction is capped to a small number of papers; increase “Query PDF papers” carefully.
                 </p>
               </div>
 
@@ -415,6 +427,11 @@ export default function RagWorkspace({
                   {!!ingestResult.pdfExtractionDisabledReason && (
                     <p className="text-xs text-slate-500">
                       {ingestResult.pdfExtractionDisabledReason}
+                    </p>
+                  )}
+                  {(ingestResult.queryPdfExtractionSelected ?? 0) > 0 && (
+                    <p className="text-xs text-slate-500">
+                      Query PDF extraction selected {ingestResult.queryPdfExtractionSelected} paper(s).
                     </p>
                   )}
                   {ingestResult.failedPapers.length > 0 && (
