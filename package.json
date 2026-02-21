@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "ci:frontend": "next build",
+    "eval:help": "python scripts/project_eval.py --help"
   },
   "dependencies": {
     "next": "^14.2.35",

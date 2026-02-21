@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/lambda/search_papers/requirements.txt
+          pip install -r backend/lambda/rag_pipeline/requirements.txt
+          pip install -r backend/requirements-dev.txt
+
+      - name: Compile backend lambdas
+        run: |
+          python -m py_compile backend/lambda/search_papers/lambda_function_multisource.py
+          python -m py_compile backend/lambda/rag_pipeline/lambda_function.py
+
+      - name: Run backend tests
+        run: python -m pytest
+
+      - name: Eval script sanity
+        run: python scripts/project_eval.py --help

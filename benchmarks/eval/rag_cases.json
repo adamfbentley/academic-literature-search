@@ -1,0 +1,44 @@
+[
+  {
+    "name": "RAG Evaluation",
+    "query": "retrieval augmented generation evaluation best practices",
+    "question": "What cross-paper best practices are consistently recommended for evaluating RAG systems?",
+    "ingestLimit": 8,
+    "queryPdfPaperLimit": 2,
+    "timeBudgetSeconds": 24,
+    "task": "synthesis",
+    "topK": 8,
+    "citationStyle": "apa",
+    "minInlineCitations": 1,
+    "minReferences": 1,
+    "minAnswerWords": 45
+  },
+  {
+    "name": "Neuronal Dynamics",
+    "query": "stochastic neuronal growth dynamics modeling",
+    "question": "What are the key modeling assumptions shared across papers on stochastic neuronal growth dynamics?",
+    "ingestLimit": 8,
+    "queryPdfPaperLimit": 2,
+    "timeBudgetSeconds": 24,
+    "task": "comparison",
+    "topK": 8,
+    "citationStyle": "ieee",
+    "minInlineCitations": 1,
+    "minReferences": 1,
+    "minAnswerWords": 45
+  },
+  {
+    "name": "Climate Policy",
+    "query": "climate adaptation policy implementation barriers",
+    "question": "Across the ingested corpus, what implementation barriers appear repeatedly in climate adaptation policy studies?",
+    "ingestLimit": 8,
+    "queryPdfPaperLimit": 2,
+    "timeBudgetSeconds": 24,
+    "task": "synthesis",
+    "topK": 8,
+    "citationStyle": "mla",
+    "minInlineCitations": 1,
+    "minReferences": 1,
+    "minAnswerWords": 45
+  }
+]

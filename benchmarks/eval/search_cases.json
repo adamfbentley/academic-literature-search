@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Life Sciences",
+    "query": "CRISPR gene editing therapeutic delivery",
+    "limit": 12,
+    "sort": "relevance",
+    "includeArxiv": false,
+    "includeCrossref": true
+  },
+  {
+    "name": "Humanities",
+    "query": "Hume causation epistemology interpretation",
+    "limit": 12,
+    "sort": "relevance",
+    "includeArxiv": false,
+    "includeCrossref": true
+  },
+  {
+    "name": "Engineering",
+    "query": "lithium sulfur battery degradation mechanisms",
+    "limit": 12,
+    "sort": "relevance",
+    "includeArxiv": false,
+    "includeCrossref": true
+  },
+  {
+    "name": "Policy",
+    "query": "climate adaptation governance policy implementation",
+    "limit": 12,
+    "sort": "relevance",
+    "includeArxiv": false,
+    "includeCrossref": true
+  },
+  {
+    "name": "Computer Science",
+    "query": "retrieval augmented generation evaluation benchmarking",
+    "limit": 12,
+    "sort": "relevance",
+    "includeArxiv": true,
+    "includeCrossref": true
+  }
+]

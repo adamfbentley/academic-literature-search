@@ -10,12 +10,15 @@ Modern academic literature search platform that combines three major research da
 
 **Key Value:** Traditional academic search requires manually cross-referencing multiple platforms. This aggregates results, deduplicates by DOI/title, enriches arXiv preprints with citation data via Semantic Scholar, and provides AI-generated summaries to quickly assess research landscapes.
 
+For implementation notes and architecture decisions, see: `docs/project_notes.md`.
+
 ## Features
 
 ### Core Search
-- 🔍 **Multi-source aggregation:** OpenAlex (relevance/concept filtering) → Semantic Scholar (citation enrichment) → arXiv (opt-in preprints)
+- 🔍 **Multi-source aggregation:** OpenAlex + Semantic Scholar + Crossref + optional arXiv preprints
 - 🎯 **Smart filtering:** Year range, minimum citations, topic/concept filters (OpenAlex Concepts API)
 - 📊 **Deduplication:** Matches by DOI + normalized title; preserves best citation counts across sources
+- ⚖️ **Source-diversified relevance ranking:** Interleaves sources to reduce source-order bias in relevance mode
 - ⚡ **Caching:** DynamoDB with 7-day search cache, 24-hour deep overview cache
 
 ### AI Analysis
@@ -29,6 +32,8 @@ Modern academic literature search platform that combines three major research da
 - 🗄️ **Vector database:** Pinecone-backed chunk storage and nearest-neighbor retrieval
 - 🧠 **Grounded synthesis:** LLM synthesis using retrieved chunks only, with inline citation tags like `[1]`
 - 🧾 **Citation formatter:** Automatic APA/MLA/IEEE reference formatting in responses
+- 🛡️ **Timeout-safe ingest guardrails:** candidate caps, deferred batches, and query-PDF extraction limits
+- 🧱 **Metadata fallback ingestion:** papers without abstract/full text still ingest metadata context for recall
 
 ### UI/UX
 - 🎨 **Modern interface:** Next.js 14 + Tailwind CSS, dark mode support
@@ -84,6 +89,43 @@ User → AWS Amplify (static site)
 **DevOps:**
 - AWS Amplify (CI/CD + hosting), Git/GitHub
 - Manual Lambda deployment (zip upload)
+
+## Quality Infrastructure
+
+- ✅ **Automated CI:** `.github/workflows/ci.yml` runs frontend build + backend compile + backend tests on every push/PR.
+- ✅ **Backend test suite:** `backend/tests/` validates search source-diversity ranking, dedup provenance merging, and RAG ingest guardrails.
+- ✅ **Reproducible evaluation harness:** `scripts/project_eval.py` runs benchmark cases and outputs objective metrics JSON.
+- ✅ **Benchmark datasets:** `benchmarks/eval/search_cases.json` and `benchmarks/eval/rag_cases.json`.
+
+### Local Quality Commands
+
+```bash
+# Frontend build (type + bundle validation)
+npm run build
+
+# Backend tests
+pip install -r backend/lambda/search_papers/requirements.txt
+pip install -r backend/lambda/rag_pipeline/requirements.txt
+pip install -r backend/requirements-dev.txt
+python -m pytest
+
+# Project benchmark (against deployed API)
+python scripts/project_eval.py \
+  --api-url https://your-api-id.execute-api.region.amazonaws.com/prod \
+  --namespace project-eval
+```
+
+### Benchmark Metrics (from `project_eval.py`)
+
+- **Search**
+  - `nonEmptyRate`: fraction of benchmark queries returning at least one paper
+  - `avgSourceDiversity`: average count of contributing sources per query
+  - `crossrefCoverageRate`: fraction of queries with at least one Crossref result
+  - `errorRate`: non-200 request rate
+- **RAG**
+  - `groundedProxyPassRate`: fraction of cases with minimum inline citations + references + answer length
+  - `avgCitationDensityPer100Words`: citation frequency proxy
+  - `ingestTimeoutRate`: frequency of deferred ingest due to time budget
 
 ## Project Structure
 
@@ -281,6 +323,7 @@ POST /search
   "minCitations": 10,
   "sort": "relevance",
   "includeArxiv": false,
+  "includeCrossref": true,
   "deepOverview": true,
   "deepOverviewMaxPapers": 10,
   "forceRefresh": false,
@@ -304,6 +347,8 @@ POST /rag
   "sources": ["openalex", "semantic_scholar", "crossref"],
   "namespace": "ml-corpus",
   "extractPdfText": true,
+  "queryPdfPaperLimit": 2,
+  "timeBudgetSeconds": 24,
   "chunkSizeWords": 220,
   "chunkOverlapWords": 40
 }
@@ -344,6 +389,10 @@ POST /rag
   "count": 20,
   "cached": false,
   "sources": ["OpenAlex", "Semantic Scholar"],
+  "sourceBreakdown": {
+    "OpenAlex": 11,
+    "Crossref": 9
+  },
   "summary": {
     "overview": "...",
     "key_themes": [...],
