@@ -28,6 +28,12 @@ MAX_INGEST_CANDIDATES = int(os.environ.get("RAG_MAX_INGEST_CANDIDATES", "10"))
 MAX_QUERY_PDF_PAPERS = int(os.environ.get("RAG_MAX_QUERY_PDF_PAPERS", "2"))
 HYBRID_RERANK_MULTIPLIER = int(os.environ.get("RAG_HYBRID_RERANK_MULTIPLIER", "4"))
 INSIGHTS_MAX_PAPERS = int(os.environ.get("RAG_INSIGHTS_MAX_PAPERS", "24"))
+CORPUS_LIST_MAX_VECTORS = int(os.environ.get("RAG_CORPUS_LIST_MAX_VECTORS", "1000"))
+CORPUS_LIST_SEED_QUERY = os.environ.get(
+    "RAG_CORPUS_LIST_SEED_QUERY",
+    "research methodology dataset findings results limitations future work",
+)
+HYPOTHESIS_DEFAULT_TOP_K = int(os.environ.get("RAG_HYPOTHESIS_DEFAULT_TOP_K", "10"))
 
 
 def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -1744,6 +1750,263 @@ def handle_ask(body: Dict[str, Any]) -> Dict[str, Any]:
     return response
 
 
+def _split_metadata_authors(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        return [clean_text(str(a)) for a in raw if clean_text(str(a))]
+    if not raw:
+        return []
+    parts = [clean_text(p) for p in str(raw).split(",")]
+    return [p for p in parts if p]
+
+
+def handle_corpus(body: Dict[str, Any]) -> Dict[str, Any]:
+    namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
+    max_papers = clamp_int(body.get("maxPapers"), 200, 1, 500)
+    metadata_filter = body.get("metadataFilter") if isinstance(body.get("metadataFilter"), dict) else None
+    include_chunk_text = as_bool(body.get("includeChunkText"), False)
+
+    embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
+    seed_embeddings = openai_embed_texts([CORPUS_LIST_SEED_QUERY], embed_model)
+    if not seed_embeddings:
+        raise RuntimeError("Failed to embed corpus seed query")
+
+    fetch_top_k = min(CORPUS_LIST_MAX_VECTORS, max(max_papers * 8, 50))
+    matches = pinecone_query(
+        query_vector=seed_embeddings[0],
+        top_k=fetch_top_k,
+        namespace=namespace,
+        metadata_filter=metadata_filter,
+    )
+
+    by_paper: Dict[str, Dict[str, Any]] = {}
+    chunk_counts: Dict[str, int] = {}
+    for match in matches:
+        meta = match.get("metadata") or {}
+        paper_id = clean_text(str(meta.get("paperId") or ""))
+        if not paper_id:
+            paper_id = _paper_key(meta)
+        chunk_counts[paper_id] = chunk_counts.get(paper_id, 0) + 1
+        if paper_id in by_paper:
+            continue
+        by_paper[paper_id] = {
+            "paperId": paper_id,
+            "title": clean_text(str(meta.get("title") or "")),
+            "authors": _split_metadata_authors(meta.get("authors")),
+            "year": as_int(meta.get("year"), 0) or None,
+            "citationCount": as_int(meta.get("citationCount"), 0),
+            "venue": clean_text(str(meta.get("venue") or "")),
+            "doi": clean_text(str(meta.get("doi") or "")),
+            "url": clean_text(str(meta.get("url") or "")),
+            "pdfUrl": clean_text(str(meta.get("pdfUrl") or "")),
+            "source": clean_text(str(meta.get("source") or "")),
+            "researchQuestion": clean_text(str(meta.get("researchQuestion") or "")),
+            "methodology": clean_text(str(meta.get("methodology") or "")),
+            "datasetSize": clean_text(str(meta.get("datasetSize") or "")),
+            "modelType": clean_text(str(meta.get("modelType") or "")),
+            "keyFindings": clean_text(str(meta.get("keyFindings") or "")),
+            "limitations": clean_text(str(meta.get("limitationsText") or "")),
+            "futureWork": clean_text(str(meta.get("futureWork") or "")),
+        }
+        if include_chunk_text:
+            by_paper[paper_id]["sampleChunk"] = clean_text(str(meta.get("chunkText") or ""))[:600]
+
+    rows = list(by_paper.values())
+    for row in rows:
+        row["chunkCount"] = chunk_counts.get(row["paperId"], 0)
+    rows.sort(
+        key=lambda r: (-(r.get("year") or 0), -(r.get("citationCount") or 0), r.get("title") or ""),
+    )
+    truncated = len(rows) > max_papers
+    rows = rows[:max_papers]
+
+    return {
+        "namespace": namespace,
+        "paperCount": len(rows),
+        "vectorMatchCount": len(matches),
+        "truncated": truncated,
+        "papers": rows,
+        "retrieval": {
+            "namespace": namespace,
+            "fetchedVectors": len(matches),
+            "fetchTopK": fetch_top_k,
+            "embeddingModel": embed_model,
+            "mode": "broad-query",
+        },
+    }
+
+
+def synthesize_hypothesis_payload(
+    claim: str,
+    context_text: str,
+    references: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {"error": "OPENAI_API_KEY is not set for hypothesis evaluation", "payload": None}
+
+    refs_short = "\n".join(
+        [f"[{r['citationNumber']}] {r.get('title')} ({r.get('year') or 'n.d.'})" for r in references]
+    )
+
+    system_prompt = (
+        "You are a rigorous research analyst evaluating a claim against retrieved evidence. "
+        "Only use the supplied context. Never invent sources. "
+        "Cite every classification and bullet with [n] citation tags drawn from the allowed list. "
+        "If evidence is sparse or only tangential, prefer the 'insufficient' verdict over forcing a conclusion."
+    )
+
+    user_prompt = (
+        f"Claim to evaluate:\n{claim}\n\n"
+        f"Allowed citations:\n{refs_short}\n\n"
+        f"Context chunks:\n{context_text}\n\n"
+        "For each citation listed above, classify how its evidence relates to the claim "
+        "(support | contradict | neutral | insufficient) with a one-sentence rationale. "
+        "Then summarize evidence FOR and AGAINST as short bullets with inline [n] citations, "
+        "and emit a single verdict.\n\n"
+        "Verdict rules:\n"
+        "- supported: most citations clearly support and none meaningfully contradict.\n"
+        "- contradicted: most citations clearly contradict and none meaningfully support.\n"
+        "- contested: meaningful evidence on both sides.\n"
+        "- insufficient: too few citations are clearly on-topic to judge.\n\n"
+        "Return valid JSON with this exact shape:\n"
+        "{\n"
+        '  "verdict": "supported|contested|contradicted|insufficient",\n'
+        '  "confidence": "high|medium|low",\n'
+        '  "summary": "Prose synthesis with inline [n] citations.",\n'
+        '  "supporting_evidence": ["bullet with [n] citation"],\n'
+        '  "contradicting_evidence": ["bullet with [n] citation"],\n'
+        '  "nuance": ["qualifying point with [n] citation"],\n'
+        '  "per_citation": [\n'
+        '    {"citationNumber": 1, "stance": "support|contradict|neutral|insufficient", "rationale": "..."}\n'
+        "  ]\n"
+        "}\n"
+    )
+
+    payload = openai_chat_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=(os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+        max_tokens=1400,
+        temperature=0.1,
+    )
+    return {"error": None, "payload": payload}
+
+
+def handle_hypothesis(body: Dict[str, Any]) -> Dict[str, Any]:
+    claim = clean_text(str(body.get("claim") or body.get("hypothesis") or body.get("question") or ""))
+    if not claim:
+        raise ValueError("claim is required")
+
+    namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
+    top_k = clamp_int(body.get("topK"), HYPOTHESIS_DEFAULT_TOP_K, 3, 30)
+    citation_style = clean_text(str(body.get("citationStyle") or "apa")).lower()
+    if citation_style not in {"apa", "mla", "ieee"}:
+        citation_style = "apa"
+    metadata_filter = body.get("metadataFilter") if isinstance(body.get("metadataFilter"), dict) else None
+    return_contexts = as_bool(body.get("returnContexts"), False)
+
+    embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
+    q_embeddings = openai_embed_texts([claim], embed_model)
+    if not q_embeddings:
+        raise RuntimeError("Failed to embed hypothesis claim")
+
+    raw_matches = pinecone_query(
+        query_vector=q_embeddings[0],
+        top_k=min(100, top_k * HYBRID_RERANK_MULTIPLIER),
+        namespace=namespace,
+        metadata_filter=metadata_filter,
+    )
+    matches = hybrid_rerank_matches(claim, raw_matches, top_k)
+    references, paper_to_citation = build_references(matches, citation_style)
+    context_text, used_chunks = build_context(matches, paper_to_citation)
+
+    if not matches:
+        return {
+            "claim": claim,
+            "verdict": "insufficient",
+            "confidence": "low",
+            "summary": "No relevant evidence was retrieved from the corpus.",
+            "supportingEvidence": [],
+            "contradictingEvidence": [],
+            "nuance": [],
+            "perCitation": [],
+            "evidenceCounts": {"support": 0, "contradict": 0, "neutral": 0, "insufficient": 0},
+            "references": [],
+            "retrieval": {"topK": top_k, "returned": 0, "namespace": namespace},
+        }
+
+    synthesis = synthesize_hypothesis_payload(claim, context_text, references)
+    if synthesis.get("error") or not synthesis.get("payload"):
+        payload: Dict[str, Any] = {
+            "verdict": "insufficient",
+            "confidence": "low",
+            "summary": "Automated synthesis was unavailable; review the retrieved citations directly.",
+            "supporting_evidence": [],
+            "contradicting_evidence": [],
+            "nuance": [],
+            "per_citation": [],
+        }
+        if synthesis.get("error"):
+            payload["error"] = synthesis["error"]
+    else:
+        payload = synthesis["payload"]
+
+    valid_stances = {"support", "contradict", "neutral", "insufficient"}
+    per_citation_raw = payload.get("per_citation") or []
+    per_citation: List[Dict[str, Any]] = []
+    counts = {"support": 0, "contradict": 0, "neutral": 0, "insufficient": 0}
+    for entry in per_citation_raw:
+        if not isinstance(entry, dict):
+            continue
+        stance = clean_text(str(entry.get("stance") or "")).lower()
+        if stance not in valid_stances:
+            stance = "insufficient"
+        citation_number = as_int(entry.get("citationNumber") or entry.get("citation_number"), 0)
+        if citation_number <= 0:
+            continue
+        per_citation.append(
+            {
+                "citationNumber": citation_number,
+                "stance": stance,
+                "rationale": clean_text(str(entry.get("rationale") or "")),
+            }
+        )
+        counts[stance] += 1
+
+    verdict = clean_text(str(payload.get("verdict") or "")).lower()
+    if verdict not in {"supported", "contested", "contradicted", "insufficient"}:
+        verdict = "insufficient"
+    confidence = clean_text(str(payload.get("confidence") or "low")).lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+
+    response: Dict[str, Any] = {
+        "claim": claim,
+        "verdict": verdict,
+        "confidence": confidence,
+        "summary": clean_text(str(payload.get("summary") or "")),
+        "supportingEvidence": [s for s in (payload.get("supporting_evidence") or []) if s],
+        "contradictingEvidence": [s for s in (payload.get("contradicting_evidence") or []) if s],
+        "nuance": [s for s in (payload.get("nuance") or []) if s],
+        "perCitation": per_citation,
+        "evidenceCounts": counts,
+        "references": references,
+        "retrieval": {
+            "topK": top_k,
+            "returned": len(matches),
+            "namespace": namespace,
+            "embeddingModel": embed_model,
+            "chatModel": (os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+            "mode": "hybrid",
+        },
+    }
+    if payload.get("error"):
+        response["error"] = payload["error"]
+    if return_contexts:
+        response["contexts"] = used_chunks
+    return response
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if (event.get("httpMethod") or "").upper() == "OPTIONS":
         return create_response(200, {"ok": True})
@@ -1768,7 +2031,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             result = handle_gaps(body)
             return create_response(200, result)
 
-        return create_response(400, {"error": "Invalid action. Use 'ingest', 'ask', 'insights', or 'gaps'."})
+        if action == "corpus":
+            result = handle_corpus(body)
+            return create_response(200, result)
+
+        if action == "hypothesis":
+            result = handle_hypothesis(body)
+            return create_response(200, result)
+
+        return create_response(
+            400,
+            {"error": "Invalid action. Use 'ingest', 'ask', 'insights', 'gaps', 'corpus', or 'hypothesis'."},
+        )
     except ValueError as e:
         return create_response(400, {"error": str(e)})
     except Exception as e:
