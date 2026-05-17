@@ -211,11 +211,17 @@ python scripts/project_eval.py \
      ```
 
 3. **Environment variables** (set in Lambda console):
+
+   `search-academic-papers`:
    - `DYNAMODB_TABLE` — DynamoDB table name (default: `academic-papers-cache`)
    - `OPENAI_API_KEY` — enables AI summaries and deep overviews (optional; degrades gracefully)
    - `OPENAI_MODEL` — model name (default: `gpt-4o-mini`)
    - `OPENALEX_MAILTO` — contact email for polite OpenAlex API usage
    - `SEMANTIC_SCHOLAR_API_KEY` — optional; raises S2 rate limits
+
+   `summarize_paper`:
+   - `DYNAMODB_TABLE` — DynamoDB table name (default: `academic-papers-cache`); shares the table with `search-academic-papers` via a `summary:<paperId>` cache key
+   - `OPENAI_API_KEY` — required to generate AI summaries; without it the Lambda falls back to a sentence-extracted summary and skips caching
 
 ### RAG Lambda Deployment (`rag_pipeline`)
 
