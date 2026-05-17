@@ -11,3 +11,10 @@ export interface Paper {
   pdfUrl?: string;
   source?: string;
 }
+
+export interface PaperSummary {
+  key_findings: string[];
+  methodology: string;
+  significance: string;
+  limitations: string;
+}

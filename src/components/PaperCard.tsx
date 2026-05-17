@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Paper } from '@/types/paper';
+import { Paper, PaperSummary } from '@/types/paper';
 
 interface PaperCardProps {
   paper: Paper;
@@ -11,13 +11,6 @@ interface PaperCardProps {
   onToggleCorpusQueue?: () => void;
 }
 
-interface Summary {
-  key_findings: string[];
-  methodology: string;
-  significance: string;
-  limitations: string;
-}
-
 export default function PaperCard({
   paper,
   isBookmarked,
@@ -25,7 +18,7 @@ export default function PaperCard({
   isInCorpusQueue,
   onToggleCorpusQueue,
 }: PaperCardProps) {
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [summary, setSummary] = useState<PaperSummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [error, setError] = useState<string | null>(null);
