@@ -34,6 +34,9 @@ CORPUS_LIST_SEED_QUERY = os.environ.get(
     "research methodology dataset findings results limitations future work",
 )
 HYPOTHESIS_DEFAULT_TOP_K = int(os.environ.get("RAG_HYPOTHESIS_DEFAULT_TOP_K", "10"))
+PROPOSE_DEFAULT_COUNT = int(os.environ.get("RAG_PROPOSE_DEFAULT_COUNT", "5"))
+PROPOSE_DEFAULT_TOP_K = int(os.environ.get("RAG_PROPOSE_DEFAULT_TOP_K", "15"))
+PROPOSE_MIN_CITATIONS_PER_PATH = int(os.environ.get("RAG_PROPOSE_MIN_CITATIONS_PER_PATH", "2"))
 
 
 def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -2007,6 +2010,335 @@ def handle_hypothesis(body: Dict[str, Any]) -> Dict[str, Any]:
     return response
 
 
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a <= 0 or norm_b <= 0:
+        return 0.0
+    import math
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
+def _vector_centroid(vectors: List[List[float]]) -> List[float]:
+    if not vectors:
+        return []
+    dim = len(vectors[0])
+    if dim == 0:
+        return []
+    centroid = [0.0] * dim
+    for vec in vectors:
+        if len(vec) != dim:
+            continue
+        for i, v in enumerate(vec):
+            centroid[i] += v
+    return [v / len(vectors) for v in centroid]
+
+
+def _extract_citation_numbers(text: str) -> List[int]:
+    if not text:
+        return []
+    seen: List[int] = []
+    for token in re.findall(r"\[(\d+)\]", text):
+        try:
+            n = int(token)
+        except Exception:
+            continue
+        if n not in seen:
+            seen.append(n)
+    return seen
+
+
+def synthesize_research_paths_payload(
+    topic: str,
+    context_text: str,
+    references: List[Dict[str, Any]],
+    target_count: int,
+    min_citations_per_path: int,
+) -> Dict[str, Any]:
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {"error": "OPENAI_API_KEY is not set for proposal generation", "payload": None}
+
+    refs_short = "\n".join(
+        [f"[{r['citationNumber']}] {r.get('title')} ({r.get('year') or 'n.d.'})" for r in references]
+    )
+
+    system_prompt = (
+        "You are a senior research strategist identifying high-probability research directions "
+        "from a corpus of literature. Quality over quantity: it is better to return three rigorous, "
+        "evidence-grounded paths than five speculative ones. "
+        "Only use the supplied context; never invent sources or cite numbers outside the allowed list. "
+        f"Every rationale MUST cite at least {min_citations_per_path} distinct papers via [n] tags."
+    )
+
+    topic_line = topic.strip() if topic.strip() else "any high-probability direction supported by the corpus"
+
+    user_prompt = (
+        f"Topic / focus: {topic_line}\n\n"
+        f"Allowed citations:\n{refs_short}\n\n"
+        f"Corpus context:\n{context_text}\n\n"
+        "Identify research directions that are HIGH PROBABILITY of yielding a meaningful discovery. "
+        "Prefer paths that fall into one of these categories (highest value first):\n"
+        "  1. Resolves a clear contradiction in the corpus.\n"
+        "  2. Extends a partial / preliminary finding to a logical next step.\n"
+        "  3. Tests an untested mechanism implied by but not isolated in the corpus.\n"
+        "  4. Combines two separately-validated approaches that haven't been combined.\n"
+        "  5. Fills a recurring limitation flagged in multiple papers' future work.\n\n"
+        "REJECT any path that is:\n"
+        "  - A restatement of a claim already established in the corpus.\n"
+        "  - A vague 'more research is needed' statement.\n"
+        "  - Speculative beyond what citations directly support.\n"
+        "  - Not falsifiable with current or near-current methods.\n\n"
+        f"Aim for {target_count} paths, but return FEWER if you cannot justify that many. "
+        "Each path must include concrete specifics (variables, methods, comparators), not vague intentions. "
+        "Be honest about evidence strength: rate 'high' only when 3+ citations directly support the premise.\n\n"
+        "Return valid JSON with this exact shape:\n"
+        "{\n"
+        '  "research_paths": [\n'
+        "    {\n"
+        '      "title": "Short descriptive name (max ~10 words)",\n'
+        '      "claim": "One-sentence hypothesis or research question",\n'
+        '      "rationale": "2-3 sentences with inline [n] citations explaining why this is high-probability",\n'
+        '      "category": "contradiction|extension|mechanism|combination|gap",\n'
+        '      "builds_on": [\n'
+        '        {"citationNumber": 1, "contribution": "what this paper established that this path leverages"}\n'
+        "      ],\n"
+        '      "open_question": "The specific unanswered question this addresses",\n'
+        '      "suggested_approach": "1-2 sentences sketching how to investigate (method, comparators, measurements)",\n'
+        '      "why_now": "What makes this tractable now (recent capability, new dataset, unresolved contradiction)",\n'
+        '      "risks": ["Concrete failure mode 1", "Concrete failure mode 2"],\n'
+        '      "evidence_strength": "high|medium|low",\n'
+        '      "impact_estimate": "high|medium|low",\n'
+        '      "self_rated_novelty": "high|medium|low"\n'
+        "    }\n"
+        "  ],\n"
+        '  "notes": "Optional 1-2 sentence note about corpus coverage or limitations affecting these proposals."\n'
+        "}\n"
+    )
+
+    payload = openai_chat_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=(os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+        max_tokens=2200,
+        temperature=0.2,
+    )
+    return {"error": None, "payload": payload}
+
+
+def _normalize_research_path(
+    raw: Dict[str, Any],
+    allowed_citation_numbers: set,
+    min_citations: int,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+
+    title = clean_text(str(raw.get("title") or ""))
+    claim = clean_text(str(raw.get("claim") or ""))
+    rationale = clean_text(str(raw.get("rationale") or ""))
+    if not title or not claim or not rationale:
+        return None
+
+    rationale_citations = [n for n in _extract_citation_numbers(rationale) if n in allowed_citation_numbers]
+    if len(rationale_citations) < min_citations:
+        return None
+
+    builds_on_raw = raw.get("builds_on") or raw.get("buildsOn") or []
+    builds_on: List[Dict[str, Any]] = []
+    for entry in builds_on_raw:
+        if not isinstance(entry, dict):
+            continue
+        n = as_int(entry.get("citationNumber") or entry.get("citation_number"), 0)
+        if n <= 0 or n not in allowed_citation_numbers:
+            continue
+        builds_on.append({
+            "citationNumber": n,
+            "contribution": clean_text(str(entry.get("contribution") or "")),
+        })
+
+    category = clean_text(str(raw.get("category") or "")).lower()
+    if category not in {"contradiction", "extension", "mechanism", "combination", "gap"}:
+        category = "extension"
+
+    evidence_strength = clean_text(str(raw.get("evidence_strength") or raw.get("evidenceStrength") or "medium")).lower()
+    if evidence_strength not in {"high", "medium", "low"}:
+        evidence_strength = "medium"
+
+    impact = clean_text(str(raw.get("impact_estimate") or raw.get("impactEstimate") or "medium")).lower()
+    if impact not in {"high", "medium", "low"}:
+        impact = "medium"
+
+    self_novelty = clean_text(str(raw.get("self_rated_novelty") or raw.get("selfRatedNovelty") or "medium")).lower()
+    if self_novelty not in {"high", "medium", "low"}:
+        self_novelty = "medium"
+
+    risks = [clean_text(str(r)) for r in (raw.get("risks") or []) if clean_text(str(r))]
+
+    return {
+        "title": title,
+        "claim": claim,
+        "rationale": rationale,
+        "category": category,
+        "buildsOn": builds_on,
+        "openQuestion": clean_text(str(raw.get("open_question") or raw.get("openQuestion") or "")),
+        "suggestedApproach": clean_text(str(raw.get("suggested_approach") or raw.get("suggestedApproach") or "")),
+        "whyNow": clean_text(str(raw.get("why_now") or raw.get("whyNow") or "")),
+        "risks": risks,
+        "evidenceStrength": evidence_strength,
+        "impactEstimate": impact,
+        "selfRatedNovelty": self_novelty,
+        "rationaleCitations": rationale_citations,
+    }
+
+
+def handle_propose(body: Dict[str, Any]) -> Dict[str, Any]:
+    topic = clean_text(str(body.get("topic") or body.get("question") or ""))
+    namespace = (body.get("namespace") or os.environ.get("PINECONE_NAMESPACE") or "default").strip()
+    target_count = clamp_int(body.get("count"), PROPOSE_DEFAULT_COUNT, 1, 10)
+    top_k = clamp_int(body.get("topK"), PROPOSE_DEFAULT_TOP_K, 5, 30)
+    citation_style = clean_text(str(body.get("citationStyle") or "apa")).lower()
+    if citation_style not in {"apa", "mla", "ieee"}:
+        citation_style = "apa"
+    metadata_filter = body.get("metadataFilter") if isinstance(body.get("metadataFilter"), dict) else None
+    return_contexts = as_bool(body.get("returnContexts"), False)
+
+    embed_model = (os.environ.get("OPENAI_EMBED_MODEL") or OPENAI_EMBED_MODEL).strip()
+    seed_query = topic if topic else "high impact research directions methodology dataset findings limitations future work"
+    seed_embeddings = openai_embed_texts([seed_query], embed_model)
+    if not seed_embeddings:
+        raise RuntimeError("Failed to embed propose seed query")
+
+    raw_matches = pinecone_query(
+        query_vector=seed_embeddings[0],
+        top_k=min(100, top_k * HYBRID_RERANK_MULTIPLIER),
+        namespace=namespace,
+        metadata_filter=metadata_filter,
+    )
+    matches = hybrid_rerank_matches(seed_query, raw_matches, top_k)
+    references, paper_to_citation = build_references(matches, citation_style)
+    context_text, used_chunks = build_context(matches, paper_to_citation)
+
+    if not matches:
+        return {
+            "topic": topic,
+            "researchPaths": [],
+            "notes": "No relevant evidence was retrieved from the corpus — ingest more papers before requesting proposals.",
+            "references": [],
+            "retrieval": {"topK": top_k, "returned": 0, "namespace": namespace},
+        }
+
+    synthesis = synthesize_research_paths_payload(
+        topic=topic,
+        context_text=context_text,
+        references=references,
+        target_count=target_count,
+        min_citations_per_path=PROPOSE_MIN_CITATIONS_PER_PATH,
+    )
+
+    response_error: Optional[str] = None
+    if synthesis.get("error") or not synthesis.get("payload"):
+        response_error = synthesis.get("error") or "Proposal generation returned no payload."
+        raw_paths: List[Dict[str, Any]] = []
+        notes = "Automated proposal generation was unavailable; review the references directly."
+    else:
+        payload = synthesis["payload"]
+        raw_paths = payload.get("research_paths") or payload.get("researchPaths") or []
+        notes = clean_text(str(payload.get("notes") or ""))
+
+    allowed_numbers = {r["citationNumber"] for r in references}
+    normalized: List[Dict[str, Any]] = []
+    for raw in raw_paths:
+        n = _normalize_research_path(raw, allowed_numbers, PROPOSE_MIN_CITATIONS_PER_PATH)
+        if n is not None:
+            normalized.append(n)
+
+    # Quantitative scores from embeddings.
+    if normalized:
+        try:
+            claim_vectors = openai_embed_texts([p["claim"] for p in normalized], embed_model)
+        except Exception as e:
+            claim_vectors = []
+            if not response_error:
+                response_error = f"Novelty scoring failed: {e}"
+
+        corpus_vectors: List[List[float]] = []
+        for match in matches:
+            values = match.get("values") if isinstance(match, dict) else None
+            if values and isinstance(values, list):
+                corpus_vectors.append(values)
+        if not corpus_vectors:
+            # Pinecone doesn't return values by default; fall back to retrieved chunk text embeddings.
+            chunk_texts = [
+                clean_text(str((match.get("metadata") or {}).get("chunkText") or ""))[:600]
+                for match in matches
+            ]
+            chunk_texts = [t for t in chunk_texts if t]
+            if chunk_texts:
+                try:
+                    corpus_vectors = openai_embed_texts(chunk_texts, embed_model)
+                except Exception:
+                    corpus_vectors = []
+
+        centroid = _vector_centroid(corpus_vectors)
+        for idx, path in enumerate(normalized):
+            claim_vec = claim_vectors[idx] if idx < len(claim_vectors) else []
+            # Novelty: 1 - cosine_sim to corpus centroid (high = more novel vs. the corpus).
+            if claim_vec and centroid:
+                novelty = max(0.0, min(1.0, 1.0 - _cosine_similarity(claim_vec, centroid)))
+            else:
+                novelty = 0.5
+            # Convergence: mean cosine similarity to retrieved chunks (high = many chunks support the premise).
+            if claim_vec and corpus_vectors:
+                sims = [_cosine_similarity(claim_vec, cv) for cv in corpus_vectors if cv]
+                convergence = sum(sims) / len(sims) if sims else 0.0
+                convergence = max(0.0, min(1.0, convergence))
+            else:
+                convergence = 0.5
+            path["noveltyScore"] = round(novelty, 4)
+            path["convergenceScore"] = round(convergence, 4)
+
+        # Final ranking: blended score weighted toward evidence + impact, novelty as tiebreaker.
+        strength_map = {"high": 1.0, "medium": 0.6, "low": 0.3}
+        def blended(p: Dict[str, Any]) -> float:
+            evidence = strength_map.get(p.get("evidenceStrength"), 0.6)
+            impact = strength_map.get(p.get("impactEstimate"), 0.6)
+            novelty = float(p.get("noveltyScore", 0.5))
+            convergence = float(p.get("convergenceScore", 0.5))
+            return 0.35 * evidence + 0.25 * impact + 0.25 * convergence + 0.15 * novelty
+        normalized.sort(key=blended, reverse=True)
+        normalized = normalized[:target_count]
+
+    response: Dict[str, Any] = {
+        "topic": topic,
+        "researchPaths": normalized,
+        "notes": notes if 'notes' in locals() else "",
+        "references": references,
+        "retrieval": {
+            "topK": top_k,
+            "returned": len(matches),
+            "namespace": namespace,
+            "embeddingModel": embed_model,
+            "chatModel": (os.environ.get("OPENAI_CHAT_MODEL") or OPENAI_CHAT_MODEL).strip(),
+            "mode": "hybrid",
+            "targetCount": target_count,
+            "minCitationsPerPath": PROPOSE_MIN_CITATIONS_PER_PATH,
+        },
+    }
+    if response_error:
+        response["error"] = response_error
+    if return_contexts:
+        response["contexts"] = used_chunks
+    return response
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if (event.get("httpMethod") or "").upper() == "OPTIONS":
         return create_response(200, {"ok": True})
@@ -2039,9 +2371,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             result = handle_hypothesis(body)
             return create_response(200, result)
 
+        if action == "propose":
+            result = handle_propose(body)
+            return create_response(200, result)
+
         return create_response(
             400,
-            {"error": "Invalid action. Use 'ingest', 'ask', 'insights', 'gaps', 'corpus', or 'hypothesis'."},
+            {"error": "Invalid action. Use 'ingest', 'ask', 'insights', 'gaps', 'corpus', 'hypothesis', or 'propose'."},
         )
     except ValueError as e:
         return create_response(400, {"error": str(e)})
