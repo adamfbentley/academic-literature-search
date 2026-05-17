@@ -3,7 +3,7 @@ import { Paper } from '@/types/paper';
 export type RagSource = 'openalex' | 'semantic_scholar' | 'crossref';
 export type RagTask = 'qa' | 'synthesis' | 'comparison' | 'outline';
 export type CitationStyle = 'apa' | 'mla' | 'ieee';
-export type RagAction = 'ask' | 'ingest' | 'insights' | 'gaps' | 'corpus' | 'hypothesis';
+export type RagAction = 'ask' | 'ingest' | 'insights' | 'gaps' | 'corpus' | 'hypothesis' | 'propose';
 
 export interface RagIngestRequest {
   action: 'ingest';
@@ -227,6 +227,62 @@ export interface RagHypothesisResponse {
   evidenceCounts: Record<HypothesisStance, number>;
   references: RagReference[];
   retrieval: RagRetrievalMeta;
+  contexts?: RagContext[];
+  error?: string;
+}
+
+export type ResearchPathCategory =
+  | 'contradiction'
+  | 'extension'
+  | 'mechanism'
+  | 'combination'
+  | 'gap';
+
+export type EvidenceLevel = 'high' | 'medium' | 'low';
+
+export interface ResearchPathBuildsOn {
+  citationNumber: number;
+  contribution: string;
+}
+
+export interface ResearchPath {
+  title: string;
+  claim: string;
+  rationale: string;
+  category: ResearchPathCategory;
+  buildsOn: ResearchPathBuildsOn[];
+  openQuestion: string;
+  suggestedApproach: string;
+  whyNow: string;
+  risks: string[];
+  evidenceStrength: EvidenceLevel;
+  impactEstimate: EvidenceLevel;
+  selfRatedNovelty: EvidenceLevel;
+  noveltyScore: number;
+  convergenceScore: number;
+  rationaleCitations: number[];
+}
+
+export interface RagProposeRequest {
+  action: 'propose';
+  topic?: string;
+  namespace?: string;
+  count?: number;
+  topK?: number;
+  citationStyle?: CitationStyle;
+  returnContexts?: boolean;
+  metadataFilter?: Record<string, unknown>;
+}
+
+export interface RagProposeResponse {
+  topic: string;
+  researchPaths: ResearchPath[];
+  notes: string;
+  references: RagReference[];
+  retrieval: RagRetrievalMeta & {
+    targetCount?: number;
+    minCitationsPerPath?: number;
+  };
   contexts?: RagContext[];
   error?: string;
 }

@@ -13,8 +13,10 @@ import {
   RagIngestRequest,
   RagIngestResponse,
   RagInsightsResponse,
+  RagProposeResponse,
   RagSource,
   RagTask,
+  ResearchPath,
 } from '@/types/rag';
 
 interface RagWorkspaceProps {
@@ -100,6 +102,14 @@ export default function RagWorkspace({
   const [loadingHypothesis, setLoadingHypothesis] = useState(false);
   const [hypothesisError, setHypothesisError] = useState<string | null>(null);
   const [hypothesisResult, setHypothesisResult] = useState<RagHypothesisResponse | null>(null);
+
+  const [proposeTopic, setProposeTopic] = useState('');
+  const [proposeCount, setProposeCount] = useState(5);
+  const [proposeTopK, setProposeTopK] = useState(15);
+  const [loadingPropose, setLoadingPropose] = useState(false);
+  const [proposeError, setProposeError] = useState<string | null>(null);
+  const [proposeResult, setProposeResult] = useState<RagProposeResponse | null>(null);
+  const [copiedPathIdx, setCopiedPathIdx] = useState<number | null>(null);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -361,6 +371,93 @@ export default function RagWorkspace({
       setHypothesisError(err instanceof Error ? err.message : 'Failed to evaluate hypothesis');
     } finally {
       setLoadingHypothesis(false);
+    }
+  };
+
+  const handlePropose = async () => {
+    const metadataFilter = buildMetadataFilter();
+    setLoadingPropose(true);
+    setProposeError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        action: 'propose',
+        namespace: resolvedNamespace,
+        count: proposeCount,
+        topK: proposeTopK,
+        citationStyle,
+      };
+      if (proposeTopic.trim()) {
+        payload.topic = proposeTopic.trim();
+      }
+      if (Object.keys(metadataFilter).length > 0) {
+        payload.metadataFilter = metadataFilter;
+      }
+      const result = await postRag<RagProposeResponse>(payload);
+      setProposeResult(result);
+      onToast?.(`Generated ${result.researchPaths.length} research paths`);
+    } catch (err) {
+      setProposeError(err instanceof Error ? err.message : 'Failed to generate research paths');
+    } finally {
+      setLoadingPropose(false);
+    }
+  };
+
+  const formatResearchPathAsMarkdown = (path: ResearchPath, references: { citationNumber: number; formatted: string }[]): string => {
+    const cited = new Set(path.rationaleCitations.concat(path.buildsOn.map((b) => b.citationNumber)));
+    const usedRefs = references.filter((r) => cited.has(r.citationNumber));
+    const lines: string[] = [];
+    lines.push(`# Research Path: ${path.title}`);
+    lines.push('');
+    lines.push(`**Hypothesis / claim:** ${path.claim}`);
+    lines.push('');
+    lines.push(`**Category:** ${path.category}`);
+    lines.push(`**Evidence strength:** ${path.evidenceStrength} · **Estimated impact:** ${path.impactEstimate} · **Novelty:** ${path.noveltyScore.toFixed(2)} · **Convergence:** ${path.convergenceScore.toFixed(2)}`);
+    lines.push('');
+    lines.push(`**Rationale:** ${path.rationale}`);
+    lines.push('');
+    if (path.openQuestion) {
+      lines.push(`**Open question:** ${path.openQuestion}`);
+      lines.push('');
+    }
+    if (path.suggestedApproach) {
+      lines.push(`**Suggested approach:** ${path.suggestedApproach}`);
+      lines.push('');
+    }
+    if (path.whyNow) {
+      lines.push(`**Why now:** ${path.whyNow}`);
+      lines.push('');
+    }
+    if (path.buildsOn.length > 0) {
+      lines.push('**Builds on:**');
+      for (const b of path.buildsOn) {
+        lines.push(`- [${b.citationNumber}] ${b.contribution}`);
+      }
+      lines.push('');
+    }
+    if (path.risks.length > 0) {
+      lines.push('**Risks to investigate:**');
+      for (const r of path.risks) lines.push(`- ${r}`);
+      lines.push('');
+    }
+    if (usedRefs.length > 0) {
+      lines.push('**References:**');
+      for (const r of usedRefs) {
+        lines.push(`- [${r.citationNumber}] ${r.formatted}`);
+      }
+    }
+    return lines.join('\n');
+  };
+
+  const copyResearchPath = async (path: ResearchPath, idx: number) => {
+    if (!proposeResult) return;
+    const md = formatResearchPathAsMarkdown(path, proposeResult.references);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopiedPathIdx(idx);
+      setTimeout(() => setCopiedPathIdx((cur) => (cur === idx ? null : cur)), 2000);
+      onToast?.('Research path copied as markdown');
+    } catch {
+      onToast?.('Failed to copy');
     }
   };
 
@@ -1184,6 +1281,197 @@ export default function RagWorkspace({
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* Research Paths */}
+          <div className="mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-gradient-to-br from-accent-500 to-primary-500 text-white text-xs">✦</span>
+                  Research Paths
+                </h4>
+                <p className="text-xs text-slate-600 mt-1">
+                  Identify high-probability research directions grounded in the ingested corpus. Every proposal requires at least 2 supporting citations.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="w-24">
+                  <label className="block text-[11px] text-slate-600 mb-1">Count</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={proposeCount}
+                    onChange={(e) => setProposeCount(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-700/50 bg-surface-900 text-white text-sm focus-ring"
+                  />
+                </div>
+                <div className="w-24">
+                  <label className="block text-[11px] text-slate-600 mb-1">Top K</label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={30}
+                    value={proposeTopK}
+                    onChange={(e) => setProposeTopK(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-700/50 bg-surface-900 text-white text-sm focus-ring"
+                  />
+                </div>
+                <button
+                  onClick={handlePropose}
+                  disabled={loadingPropose}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-accent-600 to-primary-600 text-white hover:from-accent-500 hover:to-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {loadingPropose ? 'Generating…' : (proposeResult ? 'Regenerate' : 'Generate Paths')}
+                </button>
+              </div>
+            </div>
+
+            <input
+              value={proposeTopic}
+              onChange={(e) => setProposeTopic(e.target.value)}
+              placeholder="Optional focus topic (leave blank to use the whole corpus)…"
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-700/50 bg-surface-900 text-white placeholder-slate-500 focus-ring text-sm"
+            />
+
+            {proposeError && (
+              <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/15 text-sm text-red-400">
+                {proposeError}
+              </div>
+            )}
+
+            {proposeResult && (
+              <div className="space-y-3 pt-2 border-t border-slate-800/70">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                  <span>
+                    {proposeResult.researchPaths.length} paths · namespace {proposeResult.retrieval.namespace} · {proposeResult.retrieval.returned} chunks retrieved
+                  </span>
+                  {proposeResult.error && (
+                    <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[11px]">
+                      {proposeResult.error}
+                    </span>
+                  )}
+                </div>
+
+                {proposeResult.notes && (
+                  <p className="text-xs italic text-slate-500">{proposeResult.notes}</p>
+                )}
+
+                {proposeResult.researchPaths.length === 0 && !proposeResult.error && (
+                  <div className="p-4 rounded-xl bg-surface-850/40 border border-slate-700/50 text-sm text-slate-500">
+                    No paths met the evidence bar — try ingesting more papers or refining the focus topic.
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {proposeResult.researchPaths.map((path, idx) => (
+                    <div key={`${path.title}-${idx}`} className="rounded-xl border border-slate-700/50 bg-surface-850/40 p-4 space-y-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h5 className="text-sm font-semibold text-white leading-snug">{path.title}</h5>
+                          <p className="text-sm text-slate-300 mt-1 leading-relaxed">{path.claim}</p>
+                        </div>
+                        <button
+                          onClick={() => copyResearchPath(path, idx)}
+                          className="flex-shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-surface-800 border border-slate-700/60 text-slate-400 hover:text-primary-300 hover:border-primary-500/30 transition-all"
+                        >
+                          {copiedPathIdx === idx ? 'Copied ✓' : 'Copy'}
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-wider">
+                        <span className="px-2 py-0.5 rounded bg-primary-500/15 text-primary-300 font-semibold">{path.category}</span>
+                        <span className={`px-2 py-0.5 rounded font-semibold ${
+                          path.evidenceStrength === 'high' ? 'bg-emerald-500/15 text-emerald-300' :
+                          path.evidenceStrength === 'low' ? 'bg-amber-500/15 text-amber-300' :
+                          'bg-slate-500/15 text-slate-400'
+                        }`}>
+                          evidence: {path.evidenceStrength}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded font-semibold ${
+                          path.impactEstimate === 'high' ? 'bg-emerald-500/15 text-emerald-300' :
+                          path.impactEstimate === 'low' ? 'bg-slate-500/15 text-slate-400' :
+                          'bg-primary-500/15 text-primary-300'
+                        }`}>
+                          impact: {path.impactEstimate}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-surface-800 text-slate-500 font-mono normal-case">
+                          novelty {path.noveltyScore.toFixed(2)}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-surface-800 text-slate-500 font-mono normal-case">
+                          convergence {path.convergenceScore.toFixed(2)}
+                        </span>
+                      </div>
+
+                      <div>
+                        <h6 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1">Rationale</h6>
+                        <p className="text-sm text-slate-400 leading-relaxed">{path.rationale}</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {path.openQuestion && (
+                          <div>
+                            <h6 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1">Open question</h6>
+                            <p className="text-xs text-slate-400">{path.openQuestion}</p>
+                          </div>
+                        )}
+                        {path.suggestedApproach && (
+                          <div>
+                            <h6 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1">Suggested approach</h6>
+                            <p className="text-xs text-slate-400">{path.suggestedApproach}</p>
+                          </div>
+                        )}
+                        {path.whyNow && (
+                          <div>
+                            <h6 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1">Why now</h6>
+                            <p className="text-xs text-slate-400">{path.whyNow}</p>
+                          </div>
+                        )}
+                        {path.risks.length > 0 && (
+                          <div>
+                            <h6 className="text-[11px] font-semibold uppercase tracking-wider text-amber-400 mb-1">Risks</h6>
+                            <ul className="space-y-0.5">
+                              {path.risks.map((r, i) => (
+                                <li key={i} className="text-xs text-slate-400">• {r}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+
+                      {path.buildsOn.length > 0 && (
+                        <div>
+                          <h6 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1">Builds on</h6>
+                          <ul className="space-y-1">
+                            {path.buildsOn.map((b) => (
+                              <li key={b.citationNumber} className="text-xs text-slate-400">
+                                <span className="text-primary-400 font-semibold">[{b.citationNumber}]</span> {b.contribution}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {proposeResult.references.length > 0 && (
+                  <details className="rounded-xl border border-slate-700/50 bg-surface-850/40 p-3">
+                    <summary className="cursor-pointer text-xs text-slate-500">
+                      Corpus references ({proposeResult.references.length})
+                    </summary>
+                    <ol className="mt-2 space-y-1.5">
+                      {proposeResult.references.map((ref) => (
+                        <li key={ref.citationNumber} className="text-xs text-slate-500">
+                          [{ref.citationNumber}] {ref.formatted}
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
               </div>
             )}
           </div>

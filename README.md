@@ -347,7 +347,7 @@ POST /search
 POST /rag
 ```
 
-`/rag` supports `action: "ingest"`, `action: "ask"`, `action: "insights"`, `action: "gaps"`, `action: "corpus"`, and `action: "hypothesis"`.
+`/rag` supports `action: "ingest"`, `action: "ask"`, `action: "insights"`, `action: "gaps"`, `action: "corpus"`, `action: "hypothesis"`, and `action: "propose"`.
 
 **Ingest request:**
 ```json
@@ -511,6 +511,59 @@ POST /rag
   "references": [{ "citationNumber": 1, "formatted": "..." }]
 }
 ```
+
+**Propose request** (high-probability research path generator):
+```json
+{
+  "action": "propose",
+  "namespace": "ml-corpus",
+  "topic": "scaling laws under sparse activation",
+  "count": 5,
+  "topK": 15,
+  "citationStyle": "apa"
+}
+```
+
+`topic` is optional — omit it to draw paths from the whole namespace. Each returned path requires at least 2 supporting citations from the retrieved corpus; under-grounded paths are dropped (you may get fewer than `count`).
+
+**Propose response shape (truncated):**
+```json
+{
+  "topic": "scaling laws under sparse activation",
+  "researchPaths": [
+    {
+      "title": "Test the sparsity–scaling interaction at small N",
+      "claim": "Sparse activation alters the loss-vs-compute exponent below 1B params.",
+      "rationale": "Paper [1] showed dense scaling laws hold to 1B; [3] reported sparse models diverge above 6B, leaving the small-N regime untested.",
+      "category": "extension",
+      "buildsOn": [
+        { "citationNumber": 1, "contribution": "Established dense scaling exponents" },
+        { "citationNumber": 3, "contribution": "Reported sparse divergence at large N" }
+      ],
+      "openQuestion": "Does the sparse exponent cross the dense one below 1B params?",
+      "suggestedApproach": "Train 5 sizes (50M–1B) with matched compute, dense vs MoE; fit power-law exponents.",
+      "whyNow": "Cheap small-scale runs make the comparison tractable on a single node.",
+      "risks": ["Optimizer hyperparameters may confound the exponent fit"],
+      "evidenceStrength": "high",
+      "impactEstimate": "high",
+      "selfRatedNovelty": "medium",
+      "noveltyScore": 0.71,
+      "convergenceScore": 0.64,
+      "rationaleCitations": [1, 3]
+    }
+  ],
+  "notes": "Corpus skews toward dense-model papers; sparse evidence is concentrated in 2 papers.",
+  "references": [{ "citationNumber": 1, "formatted": "..." }]
+}
+```
+
+**How paths are filtered and scored:**
+
+- Hard requirement: ≥2 citations per rationale, must reference papers in the retrieved set (hallucinated citation numbers are stripped).
+- Category must be one of `contradiction | extension | mechanism | combination | gap`.
+- **Novelty score** = `1 − cosine(claim embedding, corpus centroid)` — high means the claim sits outside the corpus's dense region.
+- **Convergence score** = mean cosine similarity of claim embedding to retrieved chunks — high means strong prior support.
+- Final ranking blends evidence strength (35%), impact (25%), convergence (25%), novelty (15%).
 
 **Response:**
 ```json
