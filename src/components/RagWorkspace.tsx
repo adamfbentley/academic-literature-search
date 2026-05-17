@@ -6,7 +6,10 @@ import {
   RagAskRequest,
   CitationStyle,
   RagAskResponse,
+  RagCorpusPaper,
+  RagCorpusResponse,
   RagGapsResponse,
+  RagHypothesisResponse,
   RagIngestRequest,
   RagIngestResponse,
   RagInsightsResponse,
@@ -84,6 +87,19 @@ export default function RagWorkspace({
   const [loadingGaps, setLoadingGaps] = useState(false);
   const [gapsError, setGapsError] = useState<string | null>(null);
   const [gapsResult, setGapsResult] = useState<RagGapsResponse | null>(null);
+
+  const [corpusMaxPapers, setCorpusMaxPapers] = useState(50);
+  const [corpusSort, setCorpusSort] = useState<'year' | 'citations' | 'title' | 'chunks'>('year');
+  const [corpusSearch, setCorpusSearch] = useState('');
+  const [loadingCorpus, setLoadingCorpus] = useState(false);
+  const [corpusError, setCorpusError] = useState<string | null>(null);
+  const [corpusResult, setCorpusResult] = useState<RagCorpusResponse | null>(null);
+
+  const [claim, setClaim] = useState('');
+  const [claimTopK, setClaimTopK] = useState(10);
+  const [loadingHypothesis, setLoadingHypothesis] = useState(false);
+  const [hypothesisError, setHypothesisError] = useState<string | null>(null);
+  const [hypothesisResult, setHypothesisResult] = useState<RagHypothesisResponse | null>(null);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -295,6 +311,94 @@ export default function RagWorkspace({
       setLoadingGaps(false);
     }
   };
+
+  const handleLoadCorpus = async () => {
+    const metadataFilter = buildMetadataFilter();
+    setLoadingCorpus(true);
+    setCorpusError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        action: 'corpus',
+        namespace: resolvedNamespace,
+        maxPapers: corpusMaxPapers,
+      };
+      if (Object.keys(metadataFilter).length > 0) {
+        payload.metadataFilter = metadataFilter;
+      }
+      const result = await postRag<RagCorpusResponse>(payload);
+      setCorpusResult(result);
+      onToast?.(`Loaded ${result.paperCount} papers from ${result.namespace}`);
+    } catch (err) {
+      setCorpusError(err instanceof Error ? err.message : 'Failed to load corpus');
+    } finally {
+      setLoadingCorpus(false);
+    }
+  };
+
+  const handleHypothesis = async () => {
+    if (!claim.trim()) {
+      setHypothesisError('Enter a claim or hypothesis to test against the corpus.');
+      return;
+    }
+    const metadataFilter = buildMetadataFilter();
+    setLoadingHypothesis(true);
+    setHypothesisError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        action: 'hypothesis',
+        claim: claim.trim(),
+        namespace: resolvedNamespace,
+        topK: claimTopK,
+        citationStyle,
+      };
+      if (Object.keys(metadataFilter).length > 0) {
+        payload.metadataFilter = metadataFilter;
+      }
+      const result = await postRag<RagHypothesisResponse>(payload);
+      setHypothesisResult(result);
+      onToast?.(`Hypothesis verdict: ${result.verdict}`);
+    } catch (err) {
+      setHypothesisError(err instanceof Error ? err.message : 'Failed to evaluate hypothesis');
+    } finally {
+      setLoadingHypothesis(false);
+    }
+  };
+
+  const sortedCorpusPapers: RagCorpusPaper[] = useMemo(() => {
+    if (!corpusResult) return [];
+    const filter = corpusSearch.trim().toLowerCase();
+    const filtered = filter
+      ? corpusResult.papers.filter((p) => {
+          const haystack = [
+            p.title,
+            p.methodology,
+            p.modelType,
+            p.datasetSize,
+            p.keyFindings,
+            p.limitations,
+            p.authors.join(' '),
+          ]
+            .join(' ')
+            .toLowerCase();
+          return haystack.includes(filter);
+        })
+      : corpusResult.papers;
+    const copy = [...filtered];
+    copy.sort((a, b) => {
+      switch (corpusSort) {
+        case 'citations':
+          return (b.citationCount || 0) - (a.citationCount || 0);
+        case 'title':
+          return (a.title || '').localeCompare(b.title || '');
+        case 'chunks':
+          return (b.chunkCount || 0) - (a.chunkCount || 0);
+        case 'year':
+        default:
+          return (b.year || 0) - (a.year || 0);
+      }
+    });
+    return copy;
+  }, [corpusResult, corpusSearch, corpusSort]);
 
   const copyReferences = async () => {
     if (!askResult || !askResult.references.length) {
@@ -810,6 +914,278 @@ export default function RagWorkspace({
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Hypothesis tester */}
+          <div className="mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-amber-500/15 text-amber-300 text-xs">⚖</span>
+                  Hypothesis Tester
+                </h4>
+                <p className="text-xs text-slate-600 mt-1">
+                  Evaluate a claim against the ingested corpus — retrieves evidence FOR and AGAINST and returns a verdict.
+                </p>
+              </div>
+              <div className="flex items-end gap-2">
+                <div className="w-24">
+                  <label className="block text-[11px] text-slate-600 mb-1">Top K</label>
+                  <input
+                    type="number"
+                    value={claimTopK}
+                    onChange={(e) => setClaimTopK(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-700/50 bg-surface-900 text-white text-sm focus-ring"
+                  />
+                </div>
+                <button
+                  onClick={handleHypothesis}
+                  disabled={loadingHypothesis}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-amber-600 to-amber-700 text-white hover:from-amber-500 hover:to-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {loadingHypothesis ? 'Testing…' : 'Test Hypothesis'}
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              value={claim}
+              onChange={(e) => setClaim(e.target.value)}
+              rows={2}
+              placeholder='e.g. "Retrieval-augmented generation outperforms fine-tuning for domain QA."'
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-700/50 bg-surface-900 text-white placeholder-slate-500 focus-ring text-sm"
+            />
+
+            {hypothesisError && (
+              <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/15 text-sm text-red-400">
+                {hypothesisError}
+              </div>
+            )}
+
+            {hypothesisResult && (
+              <div className="space-y-3 pt-2 border-t border-slate-800/70">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border ${
+                    hypothesisResult.verdict === 'supported' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' :
+                    hypothesisResult.verdict === 'contradicted' ? 'bg-red-500/10 text-red-300 border-red-500/30' :
+                    hypothesisResult.verdict === 'contested' ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' :
+                    'bg-slate-500/10 text-slate-400 border-slate-500/30'
+                  }`}>
+                    Verdict: {hypothesisResult.verdict}
+                  </span>
+                  <span className="text-xs text-slate-500">Confidence: {hypothesisResult.confidence}</span>
+                  <span className="text-xs text-slate-600">
+                    {hypothesisResult.evidenceCounts.support} support · {hypothesisResult.evidenceCounts.contradict} contradict · {hypothesisResult.evidenceCounts.neutral} neutral · {hypothesisResult.evidenceCounts.insufficient} insufficient
+                  </span>
+                </div>
+
+                {hypothesisResult.summary && (
+                  <div className="p-3 rounded-xl bg-surface-850/50 border border-slate-700/40">
+                    <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">{hypothesisResult.summary}</p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+                    <h5 className="text-xs font-semibold uppercase tracking-wider text-emerald-300 mb-2">Evidence FOR</h5>
+                    {hypothesisResult.supportingEvidence.length > 0 ? (
+                      <ul className="space-y-1.5">
+                        {hypothesisResult.supportingEvidence.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-300">• {item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-slate-600 italic">No supporting evidence identified.</p>
+                    )}
+                  </div>
+                  <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3">
+                    <h5 className="text-xs font-semibold uppercase tracking-wider text-red-300 mb-2">Evidence AGAINST</h5>
+                    {hypothesisResult.contradictingEvidence.length > 0 ? (
+                      <ul className="space-y-1.5">
+                        {hypothesisResult.contradictingEvidence.map((item, idx) => (
+                          <li key={idx} className="text-sm text-slate-300">• {item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-slate-600 italic">No contradicting evidence identified.</p>
+                    )}
+                  </div>
+                </div>
+
+                {hypothesisResult.nuance.length > 0 && (
+                  <div>
+                    <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-2">Nuance / Caveats</h5>
+                    <ul className="space-y-1">
+                      {hypothesisResult.nuance.map((item, idx) => (
+                        <li key={idx} className="text-sm text-slate-400">• {item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {hypothesisResult.perCitation.length > 0 && (
+                  <details className="rounded-xl border border-slate-700/50 bg-surface-850/40 p-3">
+                    <summary className="cursor-pointer text-xs text-slate-500">
+                      Per-citation classification ({hypothesisResult.perCitation.length})
+                    </summary>
+                    <div className="mt-2 space-y-1.5">
+                      {hypothesisResult.perCitation.map((pc) => (
+                        <div key={pc.citationNumber} className="text-xs text-slate-500 flex items-start gap-2">
+                          <span className={`flex-shrink-0 inline-flex items-center justify-center w-12 text-[10px] font-semibold uppercase rounded ${
+                            pc.stance === 'support' ? 'bg-emerald-500/15 text-emerald-300' :
+                            pc.stance === 'contradict' ? 'bg-red-500/15 text-red-300' :
+                            pc.stance === 'neutral' ? 'bg-slate-500/15 text-slate-400' :
+                            'bg-amber-500/15 text-amber-300'
+                          }`}>
+                            {pc.stance}
+                          </span>
+                          <span className="text-slate-400">[{pc.citationNumber}]</span>
+                          <span className="flex-1">{pc.rationale}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {hypothesisResult.references.length > 0 && (
+                  <div>
+                    <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-2">References</h5>
+                    <ol className="space-y-2">
+                      {hypothesisResult.references.map((ref) => (
+                        <li key={ref.citationNumber} className="text-xs text-slate-500">
+                          [{ref.citationNumber}] {ref.formatted}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Methodology comparison table */}
+          <div className="mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-primary-500/15 text-primary-300 text-xs">▦</span>
+                  Methodology Comparison
+                </h4>
+                <p className="text-xs text-slate-600 mt-1">
+                  Side-by-side view of structured fields extracted at ingest — methodology, dataset size, model type, key findings, limitations.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="w-32">
+                  <label className="block text-[11px] text-slate-600 mb-1">Max papers</label>
+                  <input
+                    type="number"
+                    value={corpusMaxPapers}
+                    onChange={(e) => setCorpusMaxPapers(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-700/50 bg-surface-900 text-white text-sm focus-ring"
+                  />
+                </div>
+                <div className="w-36">
+                  <label className="block text-[11px] text-slate-600 mb-1">Sort by</label>
+                  <select
+                    value={corpusSort}
+                    onChange={(e) => setCorpusSort(e.target.value as typeof corpusSort)}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-700/50 bg-surface-900 text-white text-sm focus-ring"
+                  >
+                    <option value="year">Year</option>
+                    <option value="citations">Citations</option>
+                    <option value="title">Title</option>
+                    <option value="chunks">Chunk count</option>
+                  </select>
+                </div>
+                <button
+                  onClick={handleLoadCorpus}
+                  disabled={loadingCorpus}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-primary-600 to-primary-700 text-white hover:from-primary-500 hover:to-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {loadingCorpus ? 'Loading…' : (corpusResult ? 'Refresh' : 'Load Corpus')}
+                </button>
+              </div>
+            </div>
+
+            {corpusError && (
+              <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/15 text-sm text-red-400">
+                {corpusError}
+              </div>
+            )}
+
+            {corpusResult && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <p className="text-xs text-slate-600">
+                    {sortedCorpusPapers.length} of {corpusResult.paperCount} papers
+                    {corpusResult.truncated ? ` · truncated to maxPapers — increase to see more` : ''}
+                    {' · '}namespace {corpusResult.namespace}
+                  </p>
+                  <input
+                    value={corpusSearch}
+                    onChange={(e) => setCorpusSearch(e.target.value)}
+                    placeholder="Filter rows…"
+                    className="ml-auto px-2.5 py-1.5 rounded-lg border border-slate-700/50 bg-surface-900 text-white placeholder-slate-500 focus-ring text-xs w-48"
+                  />
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-slate-800/60">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-surface-850/60 text-slate-500 uppercase tracking-wider text-[10px]">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold">Paper</th>
+                        <th className="px-3 py-2 text-left font-semibold">Year</th>
+                        <th className="px-3 py-2 text-left font-semibold">Citations</th>
+                        <th className="px-3 py-2 text-left font-semibold">Methodology</th>
+                        <th className="px-3 py-2 text-left font-semibold">Dataset</th>
+                        <th className="px-3 py-2 text-left font-semibold">Model</th>
+                        <th className="px-3 py-2 text-left font-semibold">Key findings</th>
+                        <th className="px-3 py-2 text-left font-semibold">Limitations</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {sortedCorpusPapers.map((p) => (
+                        <tr key={p.paperId} className="hover:bg-surface-850/30">
+                          <td className="px-3 py-2 align-top max-w-[260px]">
+                            <div className="text-slate-300 font-medium leading-snug">
+                              {p.url ? (
+                                <a href={p.url} target="_blank" rel="noopener noreferrer" className="hover:text-primary-300">
+                                  {p.title || '(untitled)'}
+                                </a>
+                              ) : (
+                                p.title || '(untitled)'
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-600 mt-0.5 truncate">
+                              {p.authors.slice(0, 3).join(', ')}{p.authors.length > 3 ? ` +${p.authors.length - 3}` : ''}
+                              {p.venue ? ` · ${p.venue}` : ''}
+                            </div>
+                            {p.source && (
+                              <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-primary-500/10 text-primary-400 text-[10px]">{p.source}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 align-top text-slate-400">{p.year ?? '—'}</td>
+                          <td className="px-3 py-2 align-top text-slate-400">{p.citationCount?.toLocaleString() ?? '0'}</td>
+                          <td className="px-3 py-2 align-top text-slate-400 max-w-[200px]">{p.methodology || <span className="text-slate-700 italic">—</span>}</td>
+                          <td className="px-3 py-2 align-top text-slate-400 max-w-[140px]">{p.datasetSize || <span className="text-slate-700 italic">—</span>}</td>
+                          <td className="px-3 py-2 align-top text-slate-400 max-w-[140px]">{p.modelType || <span className="text-slate-700 italic">—</span>}</td>
+                          <td className="px-3 py-2 align-top text-slate-400 max-w-[260px]">{p.keyFindings || <span className="text-slate-700 italic">—</span>}</td>
+                          <td className="px-3 py-2 align-top text-slate-400 max-w-[200px]">{p.limitations || <span className="text-slate-700 italic">—</span>}</td>
+                        </tr>
+                      ))}
+                      {sortedCorpusPapers.length === 0 && (
+                        <tr>
+                          <td colSpan={8} className="px-3 py-6 text-center text-slate-600">
+                            {corpusSearch ? 'No papers match the filter.' : 'Corpus is empty — ingest some papers above first.'}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

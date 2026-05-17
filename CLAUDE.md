@@ -37,11 +37,13 @@ User → Next.js (Amplify static export, /out)
 - All handlers return API-Gateway-shaped responses with CORS headers (`Access-Control-Allow-Origin: *`).
 - [backend/lambda/search_papers/lambda_function_multisource.py](backend/lambda/search_papers/lambda_function_multisource.py) — multi-source fetch → over-fetch → dedup by DOI/title → source-diversified relevance ranking → AI landscape overview (GPT-4o-mini, JSON mode) → optional deep overview. Caches in DynamoDB.
 - [backend/lambda/summarize_paper/lambda_function.py](backend/lambda/summarize_paper/lambda_function.py) — per-paper summary with 30-day cache; only successful AI summaries are cached (failures aren't, so fixing quotas doesn't require cache busting).
-- [backend/lambda/rag_pipeline/lambda_function.py](backend/lambda/rag_pipeline/lambda_function.py) — dispatcher in `lambda_handler` (line 1747) routes by `action`:
-  - `ingest` (line 1270): discover via OpenAlex/S2/Crossref or accept direct `papers[]`, normalize, optional PDF extraction via `pypdf` (capped via `queryPdfPaperLimit`), section-aware chunking, OpenAI embeddings, Pinecone upsert. Honors `timeBudgetSeconds` (defers candidates instead of failing). Also runs structured field extraction (`researchQuestion`, `methodology`, `datasetSize`, `modelType`, `keyFindings`, `limitationsText`, `futureWork`).
-  - `ask` (line 1673): embed question → Pinecone query (+metadata filter) → hybrid rerank (semantic + lexical + citation signal) → grounded chat completion with inline `[n]` citations and APA/MLA/IEEE references.
-  - `insights` (line 1531): cross-paper field map — agreement clusters, contradictions, methodological differences, timeline evolution, research gaps, per-paper profiles.
-  - `gaps` (line 1598): focused research-gap detection with supporting evidence.
+- [backend/lambda/rag_pipeline/lambda_function.py](backend/lambda/rag_pipeline/lambda_function.py) — dispatcher in `lambda_handler` routes by `action`:
+  - `ingest`: discover via OpenAlex/S2/Crossref or accept direct `papers[]`, normalize, optional PDF extraction via `pypdf` (capped via `queryPdfPaperLimit`), section-aware chunking, OpenAI embeddings, Pinecone upsert. Honors `timeBudgetSeconds` (defers candidates instead of failing). Also runs structured field extraction (`researchQuestion`, `methodology`, `datasetSize`, `modelType`, `keyFindings`, `limitationsText`, `futureWork`).
+  - `ask`: embed question → Pinecone query (+metadata filter) → hybrid rerank (semantic + lexical + citation signal) → grounded chat completion with inline `[n]` citations and APA/MLA/IEEE references.
+  - `insights`: cross-paper field map — agreement clusters, contradictions, methodological differences, timeline evolution, research gaps, per-paper profiles.
+  - `gaps`: focused research-gap detection with supporting evidence.
+  - `corpus`: broad Pinecone query against a namespace, dedupe by `paperId`, return one row per paper with all structured fields (powers the **Methodology Comparison** table). Uses a generic seed embedding (`RAG_CORPUS_LIST_SEED_QUERY`) — realistic for namespaces up to a few hundred papers.
+  - `hypothesis`: embed a user-supplied claim → hybrid retrieval → single LLM call that classifies each cited chunk as `support`/`contradict`/`neutral`/`insufficient` and returns a verdict (`supported`/`contested`/`contradicted`/`insufficient`) plus per-side evidence bullets. Falls back to `insufficient` if no API key or matches.
 
 ### Caching
 - DynamoDB table `academic-papers-cache`, primary key `searchKey` (String), TTL attribute `ttl`. Search cache 7d, deep overview 24h, paper summary 30d.

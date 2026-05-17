@@ -3,7 +3,7 @@ import { Paper } from '@/types/paper';
 export type RagSource = 'openalex' | 'semantic_scholar' | 'crossref';
 export type RagTask = 'qa' | 'synthesis' | 'comparison' | 'outline';
 export type CitationStyle = 'apa' | 'mla' | 'ieee';
-export type RagAction = 'ask' | 'ingest' | 'insights' | 'gaps';
+export type RagAction = 'ask' | 'ingest' | 'insights' | 'gaps' | 'corpus' | 'hypothesis';
 
 export interface RagIngestRequest {
   action: 'ingest';
@@ -149,4 +149,84 @@ export interface RagGapsResponse {
   supportingEvidence: string[];
   references: RagReference[];
   retrieval: RagRetrievalMeta;
+}
+
+export interface RagCorpusRequest {
+  action: 'corpus';
+  namespace?: string;
+  maxPapers?: number;
+  includeChunkText?: boolean;
+  metadataFilter?: Record<string, unknown>;
+}
+
+export interface RagCorpusPaper {
+  paperId: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  citationCount: number;
+  venue: string;
+  doi: string;
+  url: string;
+  pdfUrl: string;
+  source: string;
+  researchQuestion: string;
+  methodology: string;
+  datasetSize: string;
+  modelType: string;
+  keyFindings: string;
+  limitations: string;
+  futureWork: string;
+  chunkCount: number;
+  sampleChunk?: string;
+}
+
+export interface RagCorpusResponse {
+  namespace: string;
+  paperCount: number;
+  vectorMatchCount: number;
+  truncated: boolean;
+  papers: RagCorpusPaper[];
+  retrieval: {
+    namespace: string;
+    fetchedVectors: number;
+    fetchTopK: number;
+    embeddingModel?: string;
+    mode?: string;
+  };
+}
+
+export type HypothesisVerdict = 'supported' | 'contested' | 'contradicted' | 'insufficient';
+export type HypothesisStance = 'support' | 'contradict' | 'neutral' | 'insufficient';
+
+export interface RagHypothesisRequest {
+  action: 'hypothesis';
+  claim: string;
+  namespace?: string;
+  topK?: number;
+  citationStyle?: CitationStyle;
+  returnContexts?: boolean;
+  metadataFilter?: Record<string, unknown>;
+}
+
+export interface RagHypothesisCitation {
+  citationNumber: number;
+  stance: HypothesisStance;
+  rationale: string;
+}
+
+export interface RagHypothesisResponse {
+  claim: string;
+  verdict: HypothesisVerdict;
+  confidence: 'high' | 'medium' | 'low' | string;
+  summary: string;
+  supportingEvidence: string[];
+  contradictingEvidence: string[];
+  nuance: string[];
+  perCitation: RagHypothesisCitation[];
+  evidenceCounts: Record<HypothesisStance, number>;
+  references: RagReference[];
+  retrieval: RagRetrievalMeta;
+  contexts?: RagContext[];
+  error?: string;
 }

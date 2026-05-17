@@ -347,7 +347,7 @@ POST /search
 POST /rag
 ```
 
-`/rag` supports `action: "ingest"`, `action: "ask"`, `action: "insights"`, and `action: "gaps"`.
+`/rag` supports `action: "ingest"`, `action: "ask"`, `action: "insights"`, `action: "gaps"`, `action: "corpus"`, and `action: "hypothesis"`.
 
 **Ingest request:**
 ```json
@@ -441,6 +441,73 @@ POST /rag
 {
   "gaps": ["... [1][3]"],
   "supportingEvidence": ["... [2]"],
+  "references": [{ "citationNumber": 1, "formatted": "..." }]
+}
+```
+
+**Corpus request** (powers the Methodology Comparison table):
+```json
+{
+  "action": "corpus",
+  "namespace": "ml-corpus",
+  "maxPapers": 50,
+  "metadataFilter": { "year": { "$gte": 2022 } }
+}
+```
+
+**Corpus response shape (truncated):**
+```json
+{
+  "namespace": "ml-corpus",
+  "paperCount": 24,
+  "vectorMatchCount": 312,
+  "truncated": false,
+  "papers": [
+    {
+      "paperId": "...",
+      "title": "...",
+      "authors": ["..."],
+      "year": 2024,
+      "citationCount": 87,
+      "venue": "...",
+      "source": "OpenAlex",
+      "methodology": "...",
+      "datasetSize": "...",
+      "modelType": "...",
+      "keyFindings": "...",
+      "limitations": "...",
+      "futureWork": "...",
+      "chunkCount": 6
+    }
+  ]
+}
+```
+
+**Hypothesis request** (claim-vs-corpus evidence tester):
+```json
+{
+  "action": "hypothesis",
+  "claim": "Retrieval-augmented generation outperforms fine-tuning for domain QA.",
+  "namespace": "ml-corpus",
+  "topK": 10,
+  "citationStyle": "apa"
+}
+```
+
+**Hypothesis response shape (truncated):**
+```json
+{
+  "claim": "...",
+  "verdict": "supported|contested|contradicted|insufficient",
+  "confidence": "high|medium|low",
+  "summary": "Synthesis with inline [n] citations.",
+  "supportingEvidence": ["bullet [1][3]"],
+  "contradictingEvidence": ["bullet [2]"],
+  "nuance": ["caveat [4]"],
+  "perCitation": [
+    { "citationNumber": 1, "stance": "support", "rationale": "..." }
+  ],
+  "evidenceCounts": { "support": 3, "contradict": 1, "neutral": 2, "insufficient": 0 },
   "references": [{ "citationNumber": 1, "formatted": "..." }]
 }
 ```
