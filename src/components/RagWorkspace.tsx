@@ -29,6 +29,15 @@ interface RagWorkspaceProps {
 
 const TASK_OPTIONS: RagTask[] = ['qa', 'synthesis', 'comparison', 'outline'];
 const CITATION_STYLES: CitationStyle[] = ['apa', 'mla', 'ieee'];
+type RagSection = 'build' | 'ask' | 'hypothesis' | 'compare' | 'paths';
+
+const RAG_SECTIONS: Array<{ id: RagSection; label: string }> = [
+  { id: 'build', label: 'Build corpus' },
+  { id: 'ask', label: 'Ask and map' },
+  { id: 'hypothesis', label: 'Test claim' },
+  { id: 'compare', label: 'Compare methods' },
+  { id: 'paths', label: 'Research paths' },
+];
 
 function mapPaperForRag(paper: Paper): Paper {
   return {
@@ -110,6 +119,7 @@ export default function RagWorkspace({
   const [proposeError, setProposeError] = useState<string | null>(null);
   const [proposeResult, setProposeResult] = useState<RagProposeResponse | null>(null);
   const [copiedPathIdx, setCopiedPathIdx] = useState<number | null>(null);
+  const [activeSection, setActiveSection] = useState<RagSection>('build');
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -511,36 +521,49 @@ export default function RagWorkspace({
   };
 
   return (
-    <section className="mt-8 animate-fade-in-up">
-      <div className="glass rounded-2xl shadow-glass overflow-hidden">
-        <div className="h-0.5 bg-gradient-to-r from-primary-400 via-accent-400 to-neon-blue" />
-        <div className="p-6">
-          <div className="flex flex-col lg:flex-row lg:items-end gap-4 mb-5">
+    <section id="rag-workspace" className="mt-8 animate-fade-in-up">
+      <div className="workspace-panel overflow-hidden">
+        <div className="border-b border-slate-800/80 p-4 md:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
             <div className="flex-1">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2.5 mb-1">
-                <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-surface-800 border border-slate-700/50 text-sm">🧠</span>
-                RAG Workspace
+              <h3 className="text-xl font-semibold text-white">
+                Corpus analysis
               </h3>
-              <p className="text-sm text-slate-600">
-                Build a corpus, then run grounded QA/synthesis with automatic citations.
+              <p className="mt-1 text-sm text-slate-500">
+                Build a namespace, ask grounded questions, compare methods, and test claims.
               </p>
             </div>
             <div className="w-full lg:w-72">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+              <label className="block text-sm font-semibold text-slate-300 mb-1.5">
                 Namespace
               </label>
               <input
                 type="text"
                 value={namespace}
                 onChange={(e) => setNamespace(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-700/50 bg-surface-900 text-white placeholder-slate-500 focus-ring text-sm"
+                className="control-input w-full px-3.5 py-2.5 text-sm"
                 placeholder="default"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-            <div className="rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4">
+          <div className="mt-5 flex gap-2 overflow-x-auto rounded-2xl border border-slate-800/80 bg-surface-950/35 p-1">
+            {RAG_SECTIONS.map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => setActiveSection(section.id)}
+                className={`app-tab whitespace-nowrap ${activeSection === section.id ? 'app-tab-active' : ''}`}
+              >
+                {section.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-4 md:p-5">
+          <div className="space-y-5">
+            <div className={`rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'build' ? '' : 'hidden'}`}>
               <div>
                 <h4 className="text-sm font-semibold text-white">Corpus Ingestion</h4>
                 <p className="text-xs text-slate-600 mt-1">Ingest search results, reading list, queue, or discover new papers by query.</p>
@@ -717,7 +740,7 @@ export default function RagWorkspace({
               )}
             </div>
 
-            <div className="rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4">
+            <div className={`rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'ask' ? '' : 'hidden'}`}>
               <div>
                 <h4 className="text-sm font-semibold text-white">Ask Corpus</h4>
                 <p className="text-xs text-slate-600 mt-1">Ask grounded questions and receive synthesis with formatted references.</p>
@@ -1014,7 +1037,7 @@ export default function RagWorkspace({
           </div>
 
           {/* Hypothesis tester */}
-          <div className="mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4">
+          <div className={`mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'hypothesis' ? '' : 'hidden'}`}>
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
               <div>
                 <h4 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -1161,7 +1184,7 @@ export default function RagWorkspace({
           </div>
 
           {/* Methodology comparison table */}
-          <div className="mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-3">
+          <div className={`mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-3 ${activeSection === 'compare' ? '' : 'hidden'}`}>
             <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
               <div>
                 <h4 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -1286,7 +1309,7 @@ export default function RagWorkspace({
           </div>
 
           {/* Research Paths */}
-          <div className="mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4">
+          <div className={`mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'paths' ? '' : 'hidden'}`}>
             <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
               <div>
                 <h4 className="text-sm font-semibold text-white flex items-center gap-2">

@@ -5,8 +5,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
 
 body {
-  color: #e2e8f0;
-  background: #060a12;
+  color: #e5edf4;
+  background: #070b10;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }
 
@@ -40,14 +40,13 @@ body {
   background-clip: text;
 }
 
-/* Animated background mesh – dark moody */
+/* Quiet application background */
 .bg-mesh {
-  background-color: #060a12;
+  background-color: #070b10;
   background-image:
-    radial-gradient(at 27% 37%, rgba(34, 211, 238, 0.06) 0px, transparent 50%),
-    radial-gradient(at 97% 21%, rgba(45, 212, 191, 0.04) 0px, transparent 50%),
-    radial-gradient(at 52% 99%, rgba(56, 189, 248, 0.03) 0px, transparent 50%),
-    radial-gradient(at 10% 80%, rgba(167, 139, 250, 0.04) 0px, transparent 50%);
+    linear-gradient(180deg, rgba(20, 184, 166, 0.08), transparent 360px),
+    linear-gradient(135deg, rgba(245, 158, 11, 0.035), transparent 420px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.7), rgba(7, 11, 16, 0.95));
 }
 
 /* Subtle grid pattern overlay */
@@ -158,4 +157,46 @@ kbd {
   background: rgba(148, 163, 184, 0.08);
   color: rgba(148, 163, 184, 0.6);
   font-weight: 500;
+}
+
+@layer components {
+  .workspace-panel {
+    @apply rounded-2xl border border-slate-800/80 bg-surface-900/80 shadow-card;
+  }
+
+  .workspace-panel-muted {
+    @apply rounded-xl border border-slate-800/70 bg-surface-850/45;
+  }
+
+  .control-input {
+    @apply rounded-xl border border-slate-700/60 bg-surface-950/80 text-slate-100 placeholder-slate-600 focus-ring;
+  }
+
+  .primary-action {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-primary-500 px-4 py-2.5 text-sm font-semibold text-surface-950 shadow-md transition-all hover:bg-primary-400 disabled:cursor-not-allowed disabled:bg-surface-800 disabled:text-slate-600;
+  }
+
+  .secondary-action {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700/70 bg-surface-850/70 px-3.5 py-2 text-sm font-medium text-slate-300 transition-all hover:border-primary-500/40 hover:text-primary-300 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .quiet-action {
+    @apply inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 transition-colors hover:text-primary-300 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .icon-button {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-700/70 bg-surface-850/70 text-slate-400 transition-all hover:border-primary-500/40 hover:text-primary-300 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .status-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-slate-700/60 bg-surface-850/70 px-2.5 py-1 text-xs font-medium text-slate-400;
+  }
+
+  .app-tab {
+    @apply inline-flex items-center justify-center rounded-xl px-3.5 py-2 text-sm font-semibold text-slate-500 transition-all hover:text-slate-200;
+  }
+
+  .app-tab-active {
+    @apply bg-surface-800 text-primary-300 shadow-inner-glow;
+  }
 }
