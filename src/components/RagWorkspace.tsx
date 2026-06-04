@@ -522,11 +522,11 @@ export default function RagWorkspace({
 
   return (
     <section id="rag-workspace" className="mt-8 animate-fade-in-up">
-      <div className="workspace-panel overflow-hidden">
-        <div className="border-b border-slate-800/80 p-4 md:p-5">
+      <div className="workspace-panel art-panel overflow-hidden">
+        <div className="relative border-b border-amber-300/10 p-4 md:p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
             <div className="flex-1">
-              <h3 className="text-xl font-semibold text-white">
+              <h3 className="illuminated-title text-xl font-semibold">
                 Corpus analysis
               </h3>
               <p className="mt-1 text-sm text-slate-500">
@@ -547,7 +547,7 @@ export default function RagWorkspace({
             </div>
           </div>
 
-          <div className="mt-5 flex gap-2 overflow-x-auto rounded-2xl border border-slate-800/80 bg-surface-950/35 p-1">
+          <div className="mt-5 flex gap-2 overflow-x-auto rounded-2xl border border-amber-300/10 bg-surface-950/45 p-1 shadow-inner-glow">
             {RAG_SECTIONS.map((section) => (
               <button
                 key={section.id}
@@ -561,9 +561,9 @@ export default function RagWorkspace({
           </div>
         </div>
 
-        <div className="p-4 md:p-5">
+        <div className="relative p-4 md:p-5">
           <div className="space-y-5">
-            <div className={`rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'build' ? '' : 'hidden'}`}>
+            <div className={`workspace-panel-muted p-4 space-y-4 ${activeSection === 'build' ? '' : 'hidden'}`}>
               <div>
                 <h4 className="text-sm font-semibold text-white">Corpus Ingestion</h4>
                 <p className="text-xs text-slate-600 mt-1">Ingest search results, reading list, queue, or discover new papers by query.</p>
@@ -740,7 +740,7 @@ export default function RagWorkspace({
               )}
             </div>
 
-            <div className={`rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'ask' ? '' : 'hidden'}`}>
+            <div className={`workspace-panel-muted p-4 space-y-4 ${activeSection === 'ask' ? '' : 'hidden'}`}>
               <div>
                 <h4 className="text-sm font-semibold text-white">Ask Corpus</h4>
                 <p className="text-xs text-slate-600 mt-1">Ask grounded questions and receive synthesis with formatted references.</p>
@@ -1037,7 +1037,7 @@ export default function RagWorkspace({
           </div>
 
           {/* Hypothesis tester */}
-          <div className={`mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'hypothesis' ? '' : 'hidden'}`}>
+          <div className={`mt-5 workspace-panel-muted p-4 space-y-4 ${activeSection === 'hypothesis' ? '' : 'hidden'}`}>
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
               <div>
                 <h4 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -1184,7 +1184,7 @@ export default function RagWorkspace({
           </div>
 
           {/* Methodology comparison table */}
-          <div className={`mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-3 ${activeSection === 'compare' ? '' : 'hidden'}`}>
+          <div className={`mt-5 workspace-panel-muted p-4 space-y-3 ${activeSection === 'compare' ? '' : 'hidden'}`}>
             <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
               <div>
                 <h4 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -1309,7 +1309,7 @@ export default function RagWorkspace({
           </div>
 
           {/* Research Paths */}
-          <div className={`mt-5 rounded-xl border border-slate-700/50 bg-surface-900/35 p-4 space-y-4 ${activeSection === 'paths' ? '' : 'hidden'}`}>
+          <div className={`mt-5 workspace-panel-muted p-4 space-y-4 ${activeSection === 'paths' ? '' : 'hidden'}`}>
             <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
               <div>
                 <h4 className="text-sm font-semibold text-white flex items-center gap-2">

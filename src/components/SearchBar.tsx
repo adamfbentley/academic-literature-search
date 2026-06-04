@@ -81,15 +81,15 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
 
   return (
     <form onSubmit={handleSubmit} className="w-full">
-      <div className="workspace-panel p-4 md:p-5">
-        <div className="flex flex-col gap-4">
+      <div className="workspace-panel art-panel p-4 md:p-5">
+        <div className="relative flex flex-col gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
             <div className="flex-1">
-              <label htmlFor="search" className="mb-2 block text-sm font-semibold text-slate-300">
+              <label htmlFor="search" className="mb-2 block text-sm font-semibold text-amber-100/85">
                 Search literature
               </label>
               <div className="relative">
-                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500">
+                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4 text-amber-200/65">
                   <SearchIcon />
                 </div>
                 <input
@@ -107,7 +107,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
 
             <div className="grid grid-cols-[minmax(96px,120px),1fr] gap-2 sm:flex sm:items-end">
               <div>
-                <label htmlFor="limit" className="mb-2 block text-sm font-semibold text-slate-300">
+                <label htmlFor="limit" className="mb-2 block text-sm font-semibold text-amber-100/85">
                   Results
                 </label>
                 <select
@@ -147,7 +147,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 border-t border-slate-800/80 pt-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-col gap-3 border-t border-amber-300/10 pt-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex flex-wrap gap-2">
               {sortOptions.map((option) => (
                 <button
@@ -155,7 +155,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
                   type="button"
                   onClick={() => setSort(option.value)}
                   disabled={loading}
-                  className={`app-tab border border-slate-800/70 ${sort === option.value ? 'app-tab-active border-primary-500/30' : 'bg-surface-950/40'}`}
+                  className={`app-tab border border-slate-800/70 ${sort === option.value ? 'app-tab-active border-amber-400/25' : 'bg-surface-950/40'}`}
                 >
                   {option.label}
                 </button>
@@ -163,7 +163,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <label className="status-pill cursor-pointer">
+              <label className="status-pill cursor-pointer border-primary-400/20 bg-primary-400/10 text-primary-100/85">
                 <input
                   id="includeArxiv"
                   type="checkbox"
@@ -174,7 +174,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
                 />
                 arXiv
               </label>
-              <label className="status-pill cursor-pointer">
+              <label className="status-pill cursor-pointer border-accent-400/20 bg-accent-400/10 text-accent-100/85">
                 <input
                   id="includeCrossref"
                   type="checkbox"
@@ -198,7 +198,7 @@ export default function SearchBar({ onSearch, loading }: SearchBarProps) {
           </div>
 
           {showAdvanced && (
-            <div className="grid grid-cols-1 gap-3 border-t border-slate-800/80 pt-4 md:grid-cols-5">
+            <div className="grid grid-cols-1 gap-3 border-t border-amber-300/10 pt-4 md:grid-cols-5">
               <div className="md:col-span-2">
                 <label className="mb-1.5 block text-sm font-medium text-slate-400">
                   Topic

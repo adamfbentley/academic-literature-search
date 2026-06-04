@@ -5,8 +5,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
 
 body {
-  color: #e5edf4;
-  background: #070b10;
+  color: #edf5f6;
+  background: #06080d;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }
 
@@ -42,18 +42,82 @@ body {
 
 /* Quiet application background */
 .bg-mesh {
-  background-color: #070b10;
+  background-color: #06080d;
   background-image:
-    linear-gradient(180deg, rgba(20, 184, 166, 0.08), transparent 360px),
-    linear-gradient(135deg, rgba(245, 158, 11, 0.035), transparent 420px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.7), rgba(7, 11, 16, 0.95));
+    linear-gradient(180deg, rgba(27, 186, 168, 0.12), transparent 390px),
+    linear-gradient(126deg, rgba(245, 158, 11, 0.08), transparent 460px),
+    linear-gradient(238deg, rgba(129, 140, 248, 0.08), transparent 520px),
+    linear-gradient(90deg, rgba(17, 24, 39, 0.86), rgba(6, 8, 13, 0.98));
 }
 
 /* Subtle grid pattern overlay */
 .bg-grid {
-  background-image: linear-gradient(rgba(148, 163, 184, 0.03) 1px, transparent 1px),
-                     linear-gradient(90deg, rgba(148, 163, 184, 0.03) 1px, transparent 1px);
-  background-size: 48px 48px;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+    linear-gradient(135deg, transparent 0 48%, rgba(245, 158, 11, 0.035) 49% 51%, transparent 52% 100%);
+  background-size: 52px 52px, 52px 52px, 104px 104px;
+}
+
+.manuscript-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.manuscript-shell::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 5px),
+    linear-gradient(90deg, rgba(245, 158, 11, 0.08), transparent 18%, transparent 82%, rgba(20, 184, 166, 0.07));
+  mix-blend-mode: screen;
+  opacity: 0.45;
+}
+
+.citation-rules {
+  position: relative;
+}
+
+.citation-rules::before,
+.citation-rules::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+
+.citation-rules::before {
+  inset: 18px auto 18px -18px;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(245, 158, 11, 0.45), rgba(34, 211, 238, 0.25), transparent);
+}
+
+.citation-rules::after {
+  left: -22px;
+  top: 30px;
+  width: 9px;
+  height: 9px;
+  border: 1px solid rgba(245, 158, 11, 0.75);
+  border-radius: 999px;
+  background: #06080d;
+  box-shadow:
+    0 64px 0 -1px #06080d,
+    0 64px 0 0 rgba(34, 211, 238, 0.48),
+    0 128px 0 -1px #06080d,
+    0 128px 0 0 rgba(20, 184, 166, 0.42);
+}
+
+.desk-nav {
+  display: grid;
+  gap: 0.5rem;
+}
+
+@media (min-width: 768px) {
+  .desk-nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 /* Smooth scrollbar */
@@ -161,23 +225,40 @@ kbd {
 
 @layer components {
   .workspace-panel {
-    @apply rounded-2xl border border-slate-800/80 bg-surface-900/80 shadow-card;
+    @apply rounded-2xl border border-slate-700/70 bg-surface-900/85 shadow-card;
+    background-image:
+      linear-gradient(140deg, rgba(255, 255, 255, 0.055), transparent 34%),
+      linear-gradient(180deg, rgba(15, 23, 42, 0.9), rgba(6, 10, 18, 0.92));
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.08) inset,
+      0 18px 52px rgba(0, 0, 0, 0.34),
+      0 0 0 1px rgba(245, 158, 11, 0.025);
   }
 
   .workspace-panel-muted {
-    @apply rounded-xl border border-slate-800/70 bg-surface-850/45;
+    @apply rounded-xl border border-slate-700/65 bg-surface-850/55;
+    background-image: linear-gradient(135deg, rgba(34, 211, 238, 0.05), transparent 42%);
   }
 
   .control-input {
-    @apply rounded-xl border border-slate-700/60 bg-surface-950/80 text-slate-100 placeholder-slate-600 focus-ring;
+    @apply rounded-xl border border-slate-700/60 bg-surface-950/85 text-slate-100 placeholder-slate-600 focus-ring;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.045) inset;
   }
 
   .primary-action {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-primary-500 px-4 py-2.5 text-sm font-semibold text-surface-950 shadow-md transition-all hover:bg-primary-400 disabled:cursor-not-allowed disabled:bg-surface-800 disabled:text-slate-600;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-surface-950 shadow-md transition-all disabled:cursor-not-allowed disabled:bg-surface-800 disabled:text-slate-600;
+    background-image: linear-gradient(135deg, #fbbf24 0%, #2dd4bf 48%, #38bdf8 100%);
+    box-shadow: 0 12px 30px rgba(20, 184, 166, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+  }
+
+  .primary-action:hover:not(:disabled) {
+    filter: saturate(1.16) brightness(1.08);
+    transform: translateY(-1px);
   }
 
   .secondary-action {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700/70 bg-surface-850/70 px-3.5 py-2 text-sm font-medium text-slate-300 transition-all hover:border-primary-500/40 hover:text-primary-300 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700/70 bg-surface-850/75 px-3.5 py-2 text-sm font-medium text-slate-300 transition-all hover:border-primary-500/40 hover:text-primary-300 disabled:cursor-not-allowed disabled:opacity-50;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.045) inset;
   }
 
   .quiet-action {
@@ -189,7 +270,8 @@ kbd {
   }
 
   .status-pill {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-slate-700/60 bg-surface-850/70 px-2.5 py-1 text-xs font-medium text-slate-400;
+    @apply inline-flex items-center gap-1.5 rounded-full border border-slate-700/60 bg-surface-850/75 px-2.5 py-1 text-xs font-medium text-slate-400;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
   }
 
   .app-tab {
@@ -198,5 +280,86 @@ kbd {
 
   .app-tab-active {
     @apply bg-surface-800 text-primary-300 shadow-inner-glow;
+    background-image: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(34, 211, 238, 0.1));
+  }
+
+  .desk-tab {
+    @apply relative flex min-h-[74px] items-center gap-3 overflow-hidden rounded-2xl border border-slate-800/75 bg-surface-950/50 px-4 py-3 text-left transition-all hover:border-amber-300/25 hover:bg-surface-900/80;
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.045) inset,
+      0 14px 34px rgba(0, 0, 0, 0.18);
+  }
+
+  .desk-tab::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg, rgba(245, 158, 11, 0.12), transparent 34%),
+      linear-gradient(135deg, transparent 0 70%, rgba(34, 211, 238, 0.06));
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .desk-tab > * {
+    position: relative;
+  }
+
+  .desk-tab-active {
+    @apply border-amber-300/30 bg-surface-900 text-amber-100;
+  }
+
+  .desk-tab-active::before {
+    opacity: 1;
+  }
+
+  .library-row {
+    @apply relative flex items-start gap-3 rounded-xl border border-slate-800/70 bg-surface-950/45 p-3 transition-all hover:border-amber-300/20 hover:bg-surface-900/70;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
+  }
+
+  .library-row::before {
+    content: '';
+    position: absolute;
+    inset: 10px auto 10px 0;
+    width: 2px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.55), rgba(45, 212, 191, 0.4));
+    opacity: 0.75;
+  }
+
+  .empty-manuscript {
+    @apply relative rounded-xl border border-dashed border-slate-700/70 bg-surface-950/35 p-6 text-center text-sm leading-6 text-slate-500;
+    background-image:
+      linear-gradient(90deg, rgba(245, 158, 11, 0.055), transparent 24%, transparent 76%, rgba(34, 211, 238, 0.045)),
+      repeating-linear-gradient(0deg, transparent 0 11px, rgba(255, 255, 255, 0.025) 12px);
+  }
+
+  .art-panel {
+    @apply relative overflow-hidden;
+  }
+
+  .art-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg, rgba(245, 158, 11, 0.22), transparent 14%, transparent 86%, rgba(45, 212, 191, 0.16)),
+      repeating-linear-gradient(135deg, transparent 0 18px, rgba(255, 255, 255, 0.018) 18px 19px);
+    opacity: 0.7;
+  }
+
+  .illuminated-title {
+    @apply text-white;
+    text-shadow:
+      0 0 24px rgba(34, 211, 238, 0.16),
+      0 1px 0 rgba(245, 158, 11, 0.14);
+  }
+
+  .folio-mark {
+    @apply inline-flex items-center justify-center rounded-2xl border border-amber-400/25 bg-amber-400/10 text-amber-200;
+    box-shadow: 0 0 28px rgba(245, 158, 11, 0.08), 0 1px 0 rgba(255, 255, 255, 0.08) inset;
   }
 }

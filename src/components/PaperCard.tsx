@@ -130,18 +130,18 @@ export default function PaperCard({
   };
 
   return (
-    <article className="workspace-panel group overflow-hidden p-4 transition-all hover:border-primary-500/25 md:p-5">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+    <article className="workspace-panel art-panel citation-rules group overflow-hidden p-4 transition-all hover:border-amber-300/25 md:p-5">
+      <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
           <div className="mb-2 flex flex-wrap items-center gap-2">
             {paper.source && (
-              <span className="status-pill border-primary-500/20 bg-primary-500/10 text-primary-300">
+              <span className="status-pill border-amber-400/25 bg-amber-400/10 text-amber-200">
                 {paper.source}
               </span>
             )}
             {paper.year && <span className="status-pill">{paper.year}</span>}
             {paper.citationCount !== undefined && (
-              <span className="status-pill border-amber-500/20 bg-amber-500/10 text-amber-300">
+              <span className="status-pill border-primary-400/20 bg-primary-400/10 text-primary-200">
                 {paper.citationCount.toLocaleString()} cites
               </span>
             )}
@@ -152,9 +152,9 @@ export default function PaperCard({
             )}
           </div>
 
-          <h3 className="text-lg font-semibold leading-snug text-white">
+          <h3 className="illuminated-title text-lg font-semibold leading-snug">
             {paper.url ? (
-              <a href={paper.url} target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-primary-300">
+              <a href={paper.url} target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-amber-100">
                 {paper.title}
               </a>
             ) : (
@@ -206,7 +206,7 @@ export default function PaperCard({
       </div>
 
       {paper.abstract && (
-        <div className="mt-4 border-t border-slate-800/75 pt-4">
+        <div className="relative mt-4 border-t border-amber-300/10 pt-4">
           <p className={`text-sm leading-7 text-slate-400 ${!abstractExpanded ? 'line-clamp-3' : ''}`}>
             {paper.abstract}
           </p>
@@ -221,7 +221,7 @@ export default function PaperCard({
         </div>
       )}
 
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-800/75 pt-4">
+      <div className="relative mt-4 flex flex-wrap items-center gap-2 border-t border-amber-300/10 pt-4">
         <button onClick={copyCitation} className="quiet-action" title="Copy citation">
           <CopyIcon />
           {citationCopied ? 'Copied' : 'Cite'}
@@ -231,7 +231,7 @@ export default function PaperCard({
           <button
             onClick={() => handleSummarize(false)}
             disabled={loadingSummary}
-            className="secondary-action ml-auto border-accent-500/25 bg-accent-500/10 text-accent-300 hover:text-accent-200"
+            className="secondary-action ml-auto border-amber-400/25 bg-amber-400/10 text-amber-200 hover:text-amber-100"
           >
             {loadingSummary ? (
               <>
@@ -276,7 +276,7 @@ export default function PaperCard({
       )}
 
       {showSummary && summary && (
-        <div className="mt-5 border-t border-accent-500/20 pt-5">
+        <div className="relative mt-5 border-t border-accent-500/20 pt-5">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h4 className="text-sm font-semibold text-white">AI summary</h4>
             {summaryCached !== null && (
