@@ -90,8 +90,8 @@ function CopyIcon() {
 
 function Metric({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-xl border border-amber-400/10 bg-surface-950/45 p-3 shadow-inner-glow">
-      <div className="text-xs font-medium uppercase tracking-[0.16em] text-amber-200/55">{label}</div>
+    <div className="rounded-md border border-amber-300/20 bg-surface-950/55 p-3 shadow-inner-glow">
+      <div className="text-xs font-extrabold uppercase tracking-[0.16em] text-amber-100/65">{label}</div>
       <div className="mt-1 text-xl font-semibold text-white">{value}</div>
     </div>
   );
@@ -310,8 +310,8 @@ export default function Home() {
   };
 
   return (
-    <main className="manuscript-shell min-h-screen bg-mesh bg-grid">
-      <div className="h-1 bg-gradient-to-r from-amber-300 via-primary-300 to-accent-300" />
+    <main className="retro-light-shell min-h-screen bg-mesh bg-grid">
+      <div className="h-1 bg-gradient-to-r from-[#ff6f61] via-[#e8b33e] to-[#109180]" />
 
       {toast && (
         <div className="fixed right-4 top-4 z-50 toast sm:right-6 sm:top-6">
@@ -330,23 +330,23 @@ export default function Home() {
                   <ResearchGlyph />
                 </span>
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-200/70">Academic Literature AI</p>
+                  <p className="text-xs font-extrabold uppercase tracking-[0.24em] text-amber-100/75">Academic Literature AI</p>
                   <p className="mt-1 text-sm text-slate-500">Multi-source discovery and grounded synthesis</p>
                 </div>
               </div>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <span className="status-pill border-amber-400/20 bg-amber-400/10 text-amber-200">
-                  Landscape
+                  Live index
                 </span>
                 <span className="status-pill border-primary-400/20 bg-primary-400/10 text-primary-200">OpenAlex</span>
                 <span className="status-pill border-indigo-300/20 bg-indigo-400/10 text-indigo-200">Semantic Scholar</span>
                 <span className="status-pill border-accent-300/20 bg-accent-400/10 text-accent-200">Crossref</span>
               </div>
               <h1 className="illuminated-title text-4xl font-semibold md:text-5xl">
-                Research desk
+                Literature console
               </h1>
               <p className="mt-3 max-w-2xl text-base leading-7 text-slate-400">
-                Move from discovery to corpus analysis without losing the thread of what you have found.
+                Search the literature, stage the strongest papers, and synthesize a grounded corpus from one command surface.
               </p>
             </div>
           </div>
@@ -366,7 +366,7 @@ export default function Home() {
               onClick={() => setActiveDesk(tab.id)}
               className={`desk-tab ${activeDesk === tab.id ? 'desk-tab-active' : ''}`}
             >
-              <span className="text-sm font-semibold">{tab.label}</span>
+              <span className="text-sm font-extrabold uppercase tracking-[0.08em]">{tab.label}</span>
               <span className="hidden text-xs text-slate-500 md:block">{tab.description}</span>
               <span className="ml-auto rounded-full border border-slate-700/70 bg-surface-950/70 px-2 py-0.5 text-xs text-slate-400">
                 {deskCounts[tab.id]}

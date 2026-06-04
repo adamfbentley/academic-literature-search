@@ -52,8 +52,8 @@ const config: Config = {
         },
       },
       fontFamily: {
-        sans: ['Overpass', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+        sans: ['IBM Plex Sans', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['IBM Plex Mono', 'Fira Code', 'monospace'],
       },
       boxShadow: {
         'glass': '0 8px 32px rgba(0, 0, 0, 0.3)',
