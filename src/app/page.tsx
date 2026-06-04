@@ -311,7 +311,7 @@ export default function Home() {
 
   return (
     <main className="retro-light-shell min-h-screen bg-mesh bg-grid">
-      <div className="h-1 bg-gradient-to-r from-[#ff6f61] via-[#e8b33e] to-[#109180]" />
+      <div className="h-1 bg-gradient-to-r from-[#ede7db] via-[#fbf8f0] to-[#d8cfbd]" />
 
       {toast && (
         <div className="fixed right-4 top-4 z-50 toast sm:right-6 sm:top-6">
